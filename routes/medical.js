@@ -56,17 +56,34 @@ router.post('/update', upload.single('photo'), async (req, res) => {
   }
 });
 
-// ✅ Fetch medical info
+// ✅ Fetch medical info - REVISED VERSION
 router.get('/:user_id', async (req, res) => {
   try {
     const result = await pool.query(
       `SELECT * FROM medical_info WHERE user_id = $1`,
       [req.params.user_id]
     );
-    res.json(result.rows[0] || {});
+    
+    // ✅ Return consistent format whether data exists or not
+    if (result.rows.length === 0) {
+      return res.json({
+        exists: false,
+        message: 'No medical information found'
+      });
+    }
+    
+    res.json({
+      exists: true,
+      ...result.rows[0]  // Spread all medical data
+    });
+    
   } catch (err) {
-    console.error('❌ Fetch error:', err.message);
-    res.status(500).json({ message: 'Error fetching medical info' });
+    console.error('❌ Fetch medical error:', err.message);
+    res.status(500).json({ 
+      exists: false,
+      message: 'Error fetching medical info',
+      error: err.message 
+    });
   }
 });
 
