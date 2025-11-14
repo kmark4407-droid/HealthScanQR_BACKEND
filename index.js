@@ -1,4 +1,4 @@
-// index.js - UPDATED WITH PROPER FILE UPLOAD CONFIG
+// index.js - UPDATED FOR PRODUCTION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -15,30 +15,52 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true })); // Add this for form data
+// ✅ FIXED CORS Configuration for Production
+const allowedOrigins = [
+  'http://localhost:4200',
+  'https://healthscanqr2025.vercel.app',
+  'https://health-scan-qr2025.vercel.app',
+];
 
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:4200',
-  credentials: true
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    if (allowedOrigins.indexOf(origin) === -1) {
+      const msg = 'The CORS policy for this site does not allow access from the specified Origin.';
+      return callback(new Error(msg), false);
+    }
+    return callback(null, true);
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// ✅ Handle preflight requests
+app.options('*', cors());
+
+// Middleware
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // ✅ Serve uploaded images - MUST BE BEFORE ROUTES
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Health check
 app.get('/api/health', (_req, res) => {
-  res.json({ ok: true, time: new Date().toISOString() });
+  res.json({ 
+    ok: true, 
+    time: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development'
+  });
 });
 
 // ✅ ADD THIS: Test Neon Database Route
 app.get('/api/test-neon', async (req, res) => {
   try {
-    // Test 1: Simple query to check connection
     const result = await pool.query('SELECT version() as postgres_version, current_timestamp as server_time');
-    
-    // Test 2: Get users from your table
     const usersResult = await pool.query('SELECT id, full_name, email, username, created_at FROM users ORDER BY id LIMIT 10');
     
     res.json({
@@ -79,8 +101,14 @@ app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
+// ✅ Catch all handler for SPA (if needed)
+app.get('*', (req, res) => {
+  res.json({ message: 'HealthScan QR API Server' });
+});
+
 const PORT = Number(process.env.PORT || 3000);
-app.listen(PORT, () => {
-  console.log(`🚀 API listening on http://localhost:${PORT}`);
-  console.log(`📊 Test Neon database at: http://localhost:${PORT}/api/test-neon`);
+app.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 API listening on port ${PORT}`);
+  console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`✅ CORS enabled for: ${allowedOrigins.join(', ')}`);
 });
