@@ -112,3 +112,5 @@ router.get('/:user_id', async (req, res) => {
     });
   }
 });
+
+export default router;
