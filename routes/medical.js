@@ -56,29 +56,55 @@ router.post('/update', upload.single('photo'), async (req, res) => {
   }
 });
 
-// ✅ Fetch medical info - REVISED VERSION
+
+// ✅ Fetch medical info - WITH DETAILED LOGGING
 router.get('/:user_id', async (req, res) => {
   try {
+    const userId = req.params.user_id;
+    console.log('🔍 Fetching medical info for user_id:', userId);
+
+    // First, let's check if the user exists in users table
+    const userCheck = await pool.query(
+      `SELECT id, full_name FROM users WHERE id = $1`,
+      [userId]
+    );
+    console.log('👤 User check result:', userCheck.rows);
+
+    // Now query medical_info
     const result = await pool.query(
       `SELECT * FROM medical_info WHERE user_id = $1`,
-      [req.params.user_id]
+      [userId]
     );
     
-    // ✅ Return consistent format whether data exists or not
+    console.log('📊 Medical query result:', {
+      rowCount: result.rowCount,
+      rows: result.rows,
+      firstRow: result.rows[0] || 'No rows'
+    });
+
+    // ✅ Return consistent format
     if (result.rows.length === 0) {
+      console.log('ℹ️ No medical info found for user:', userId);
       return res.json({
         exists: false,
         message: 'No medical information found'
       });
     }
     
+    console.log('✅ Medical data found:', result.rows[0]);
     res.json({
       exists: true,
-      ...result.rows[0]  // Spread all medical data
+      ...result.rows[0]
     });
     
   } catch (err) {
-    console.error('❌ Fetch medical error:', err.message);
+    console.error('❌ Fetch medical error details:', {
+      message: err.message,
+      code: err.code,
+      detail: err.detail,
+      stack: err.stack
+    });
+    
     res.status(500).json({ 
       exists: false,
       message: 'Error fetching medical info',
@@ -86,5 +112,3 @@ router.get('/:user_id', async (req, res) => {
     });
   }
 });
-
-export default router;
