@@ -1,9 +1,13 @@
-// index.js - FIXED ROUTE ORDER
+// index.js - COMPLETELY FIXED VERSION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
+
+// Import routes FIRST
+import authRoutes from './routes/auth.js';
+import medicalRoutes from './routes/medical.js';
 
 const app = express();
 
@@ -25,17 +29,14 @@ app.use(cors({
 
 app.options('*', cors());
 
-// Middleware - IMPORTANT: This must come before routes
+// Middleware
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ IMPORTANT: Import and use routes BEFORE catch-all
-import authRoutes from './routes/auth.js';
-import medicalRoutes from './routes/medical.js';
-
+// ✅ CRITICAL: Use routes BEFORE any other routes
 app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
 
@@ -57,19 +58,19 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// Test medical endpoint
-app.get('/api/medical/test', (req, res) => {
-  res.json({ 
-    success: true,
-    message: 'Medical endpoint is working! 🎉'
-  });
-});
-
-// ✅ FIXED: Catch-all handler should be LAST
-app.get('*', (req, res) => {
-  console.log('⚠️ Catch-all route hit for:', req.method, req.url);
-  res.json({ 
-    message: 'HealthScan QR API Server',
+// ✅ FIXED: Catch-all handler with method logging
+app.all('*', (req, res) => {
+  console.log(`⚠️ Catch-all route hit: ${req.method} ${req.url}`);
+  console.log(`📦 Headers:`, req.headers);
+  
+  if (req.method === 'POST') {
+    console.log(`📦 POST Body:`, req.body);
+  }
+  
+  res.status(404).json({ 
+    error: 'Endpoint not found',
+    method: req.method,
+    url: req.url,
     available_endpoints: [
       'GET /api/health',
       'GET /api/test', 
@@ -86,6 +87,5 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`✅ Medical test: https://healthscanqr-backend.onrender.com/api/medical/test`);
+  console.log(`✅ Routes loaded: auth, medical`);
 });
