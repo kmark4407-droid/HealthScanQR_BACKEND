@@ -1,4 +1,4 @@
-// index.js - COMPATIBLE WITH EXPRESS 4
+// index.js - ADD AUTH ROUTES
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -23,7 +23,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
 
-// Handle preflight requests
 app.options('*', cors());
 
 // Middleware
@@ -51,13 +50,13 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// Import routes (comment these out temporarily to test)
-// import authRoutes from './routes/auth.js';
+// ✅ STEP 1: Add Auth Routes
+import authRoutes from './routes/auth.js';
+app.use('/api/auth', authRoutes);
+
+// ❌ Keep these commented for now
 // import medicalRoutes from './routes/medical.js';
 // import adminRoutes from './routes/admin.js';
-
-// Use routes (comment these out temporarily)
-// app.use('/api/auth', authRoutes);
 // app.use('/api/medical', medicalRoutes);
 // app.use('/api/admin', adminRoutes);
 
@@ -67,7 +66,9 @@ app.get('*', (req, res) => {
     message: 'HealthScan QR API Server',
     available_endpoints: [
       '/api/health',
-      '/api/test'
+      '/api/test',
+      '/api/auth/register',
+      '/api/auth/login'
     ]
   });
 });
