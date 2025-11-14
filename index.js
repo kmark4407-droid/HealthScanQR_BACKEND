@@ -1,4 +1,4 @@
-// index.js - ADD AUTH ROUTES
+// index.js - WITH ALL ROUTES ENABLED
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -11,16 +11,17 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// CORS Configuration
+// CORS Configuration - EXPANDED
 app.use(cors({
   origin: [
     'http://localhost:4200', 
     'https://healthscanqr2025.vercel.app',
-    'https://health-scan-qr2025.vercel.app'
+    'https://health-scan-qr2025.vercel.app',
+    'https://healthscanqr2025.vercel.app'
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept']
 }));
 
 app.options('*', cors());
@@ -50,15 +51,15 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// ✅ STEP 1: Add Auth Routes
+// ✅ IMPORTANT: Add ALL Routes
 import authRoutes from './routes/auth.js';
-app.use('/api/auth', authRoutes);
+import medicalRoutes from './routes/medical.js'; // ← UNCOMMENT THIS
+// import adminRoutes from './routes/admin.js';   // Keep admin commented for now
 
-// ❌ Keep these commented for now
-// import medicalRoutes from './routes/medical.js';
-// import adminRoutes from './routes/admin.js';
-// app.use('/api/medical', medicalRoutes);
-// app.use('/api/admin', adminRoutes);
+// ✅ USE ALL ROUTES
+app.use('/api/auth', authRoutes);
+app.use('/api/medical', medicalRoutes); // ← UNCOMMENT THIS
+// app.use('/api/admin', adminRoutes);   // Keep admin commented for now
 
 // Simple catch-all handler
 app.get('*', (req, res) => {
@@ -68,7 +69,9 @@ app.get('*', (req, res) => {
       '/api/health',
       '/api/test',
       '/api/auth/register',
-      '/api/auth/login'
+      '/api/auth/login',
+      '/api/medical/update', // ← NOW AVAILABLE!
+      '/api/medical/:user_id'
     ]
   });
 });
@@ -77,5 +80,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`✅ Health check: http://localhost:${PORT}/api/health`);
+  console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
+  console.log(`✅ Medical endpoint: https://healthscanqr-backend.onrender.com/api/medical/update`);
 });
