@@ -1,4 +1,4 @@
-// medical.js - FIXED VERSION WITH WORKING POST ROUTES AND GET ENDPOINT
+// medical.js - FIXED VERSION WITH ABSOLUTE PHOTO URLS
 import express from 'express';
 import multer from 'multer';
 import pool from '../db.js';
@@ -11,6 +11,13 @@ const router = express.Router();
 // Get directory name for ES modules
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+// ✅ Get base URL for absolute photo URLs
+const getBaseUrl = () => {
+  return process.env.NODE_ENV === 'production' 
+    ? 'https://healthscanqr-backend.onrender.com'
+    : 'http://localhost:3000';
+};
 
 // Multer config
 const storage = multer.diskStorage({
@@ -26,7 +33,8 @@ const storage = multer.diskStorage({
     cb(null, uploadsDir);
   },
   filename: (req, file, cb) => {
-    const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
+    const fileExt = path.extname(file.originalname);
+    const uniqueName = `profile-${Date.now()}-${Math.round(Math.random() * 1E9)}${fileExt}`;
     console.log('📄 Generated filename:', uniqueName);
     cb(null, uniqueName);
   }
@@ -46,7 +54,7 @@ const upload = multer({
   }
 });
 
-// ✅ ADD THIS: GET medical information by user_id
+// ✅ IMPROVED: GET medical information by user_id with ABSOLUTE photo URLs
 router.get('/:user_id', async (req, res) => {
   try {
     const user_id = parseInt(req.params.user_id);
@@ -77,10 +85,30 @@ router.get('/:user_id', async (req, res) => {
     const medicalInfo = result.rows[0];
     console.log('✅ Medical info found:', medicalInfo);
 
+    // ✅ FIXED: Create ABSOLUTE photo URL that frontend can use directly
+    let photo_url = medicalInfo.photo_url;
+    if (photo_url) {
+      // If it's already an absolute URL, keep it
+      if (photo_url.startsWith('http')) {
+        // Do nothing, it's already absolute
+      } 
+      // If it's a relative path, convert to absolute
+      else if (photo_url.startsWith('/uploads/')) {
+        photo_url = `${getBaseUrl()}${photo_url}`;
+      }
+      // If it's just a filename, construct the full path
+      else {
+        photo_url = `${getBaseUrl()}/uploads/${photo_url}`;
+      }
+    }
+
+    console.log('🖼️ Final photo URL for frontend:', photo_url);
+
     res.json({
       success: true,
       exists: true,
-      ...medicalInfo
+      ...medicalInfo,
+      photo_url: photo_url // ✅ Return ABSOLUTE URL that frontend can use directly
     });
 
   } catch (err) {
@@ -93,38 +121,13 @@ router.get('/:user_id', async (req, res) => {
   }
 });
 
-// ✅ FIX: Test POST route to verify routing works
-router.post('/test-post', (req, res) => {
-  console.log('✅ POST /api/medical/test-post hit successfully!');
-  console.log('📦 Request body:', req.body);
-  
-  res.json({ 
-    success: true, 
-    message: 'POST request to medical route is working perfectly! 🎉',
-    timestamp: new Date().toISOString(),
-    receivedData: req.body
-  });
-});
-
-// ✅ FIX: Simple POST without multer for testing
-router.post('/test-simple', (req, res) => {
-  console.log('✅ POST /api/medical/test-simple hit successfully!');
-  
-  res.json({ 
-    success: true, 
-    message: 'Simple POST request is working!',
-    timestamp: new Date().toISOString(),
-    data: req.body
-  });
-});
-
-// ✅ FIX: Save or update medical info
+// ✅ IMPROVED: Save or update medical info with ABSOLUTE photo URLs
 router.post('/update', upload.single('photo'), async (req, res) => {
   console.log('=== 🏥 MEDICAL UPDATE REQUEST START ===');
   
   try {
     console.log('📦 Request body keys:', Object.keys(req.body));
-    console.log('📄 File:', req.file ? 'Uploaded' : 'No file');
+    console.log('📄 File:', req.file ? `Uploaded: ${req.file.filename}` : 'No file');
 
     // Convert user_id to integer
     const user_id = parseInt(req.body.user_id);
@@ -153,18 +156,24 @@ router.post('/update', upload.single('photo'), async (req, res) => {
       address, allergies = '', medications = '', conditions = '', emergency_contact
     } = req.body;
 
-    // Handle photo URL
+    // ✅ Store relative path in database, but return absolute URL to frontend
     let photo_url = null;
+    let absolute_photo_url = null;
+    
     if (req.file) {
-      photo_url = `/uploads/${req.file.filename}`;
+      photo_url = `/uploads/${req.file.filename}`; // Store relative path in DB
+      absolute_photo_url = `${getBaseUrl()}${photo_url}`; // Create absolute URL for response
+      console.log('🖼️ Photo paths - Relative:', photo_url, 'Absolute:', absolute_photo_url);
     }
 
     // Check if medical info already exists
     const existingQuery = await pool.query(
-      `SELECT id FROM medical_info WHERE user_id = $1`,
+      `SELECT id, photo_url FROM medical_info WHERE user_id = $1`,
       [user_id]
     );
 
+    let result;
+    
     if (existingQuery.rows.length > 0) {
       // Update existing record
       const updateQuery = `
@@ -176,36 +185,49 @@ router.post('/update', upload.single('photo'), async (req, res) => {
         WHERE user_id = $1
         RETURNING *`;
       
-      const updateResult = await pool.query(updateQuery, [
+      result = await pool.query(updateQuery, [
         user_id, full_name, dob, blood_type, address, 
         allergies, medications, conditions, emergency_contact, photo_url
       ]);
 
       console.log('✅ Medical info updated successfully');
-      return res.json({ 
-        success: true,
-        message: 'Medical information updated successfully',
-        data: updateResult.rows[0]
-      });
+    } else {
+      // Insert new record
+      const insertQuery = `
+        INSERT INTO medical_info 
+          (user_id, full_name, dob, blood_type, address, allergies, medications, conditions, emergency_contact, photo_url)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
+        RETURNING *`;
+      
+      result = await pool.query(insertQuery, [
+        user_id, full_name, dob, blood_type, address, 
+        allergies, medications, conditions, emergency_contact, photo_url
+      ]);
+
+      console.log('✅ Medical info saved successfully');
     }
 
-    // Insert new record
-    const insertQuery = `
-      INSERT INTO medical_info 
-        (user_id, full_name, dob, blood_type, address, allergies, medications, conditions, emergency_contact, photo_url)
-      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
-      RETURNING *`;
+    const savedRecord = result.rows[0];
     
-    const insertResult = await pool.query(insertQuery, [
-      user_id, full_name, dob, blood_type, address, 
-      allergies, medications, conditions, emergency_contact, photo_url
-    ]);
+    // ✅ FIXED: Return ABSOLUTE photo URL to frontend
+    let responsePhotoUrl = savedRecord.photo_url;
+    if (responsePhotoUrl && !responsePhotoUrl.startsWith('http')) {
+      if (responsePhotoUrl.startsWith('/uploads/')) {
+        responsePhotoUrl = `${getBaseUrl()}${responsePhotoUrl}`;
+      } else {
+        responsePhotoUrl = `${getBaseUrl()}/uploads/${responsePhotoUrl}`;
+      }
+    }
 
-    console.log('✅ Medical info saved successfully');
+    console.log('🎯 Sending to frontend - Photo URL:', responsePhotoUrl);
+
     res.json({ 
       success: true,
-      message: 'Medical information saved successfully', 
-      data: insertResult.rows[0] 
+      message: existingQuery.rows.length > 0 ? 'Medical information updated successfully' : 'Medical information saved successfully',
+      data: {
+        ...savedRecord,
+        photo_url: responsePhotoUrl // ✅ Send ABSOLUTE URL to frontend
+      }
     });
 
   } catch (err) {
@@ -225,6 +247,30 @@ router.post('/update', upload.single('photo'), async (req, res) => {
       error: err.message
     });
   }
+});
+
+// Test POST route
+router.post('/test-post', (req, res) => {
+  console.log('✅ POST /api/medical/test-post hit successfully!');
+  
+  res.json({ 
+    success: true, 
+    message: 'POST request to medical route is working perfectly! 🎉',
+    timestamp: new Date().toISOString(),
+    receivedData: req.body
+  });
+});
+
+// Simple POST without multer for testing
+router.post('/test-simple', (req, res) => {
+  console.log('✅ POST /api/medical/test-simple hit successfully!');
+  
+  res.json({ 
+    success: true, 
+    message: 'Simple POST request is working!',
+    timestamp: new Date().toISOString(),
+    data: req.body
+  });
 });
 
 // Test GET endpoint
