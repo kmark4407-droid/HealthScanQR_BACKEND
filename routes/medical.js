@@ -1,4 +1,4 @@
-// medical.js - ENHANCED LOGGING VERSION
+// medical.js - COMPLETE REVISED VERSION WITH TEST ROUTES
 import express from 'express';
 import multer from 'multer';
 import pool from '../db.js';
@@ -46,9 +46,38 @@ const upload = multer({
   }
 });
 
+// ✅ ADD THIS: Test POST route to verify routing works
+router.post('/test-post', (req, res) => {
+  console.log('🎯 POST /api/medical/test-post hit successfully!');
+  console.log('📦 Request headers:', req.headers);
+  console.log('📦 Request body:', req.body);
+  console.log('📦 Request method:', req.method);
+  
+  res.json({ 
+    success: true, 
+    message: 'POST request to medical route is working perfectly! 🎉',
+    timestamp: new Date().toISOString(),
+    receivedData: req.body,
+    method: req.method
+  });
+});
+
+// ✅ ADD THIS: Simple POST without multer for testing
+router.post('/test-simple', (req, res) => {
+  console.log('🎯 POST /api/medical/test-simple hit successfully!');
+  
+  res.json({ 
+    success: true, 
+    message: 'Simple POST request is working!',
+    timestamp: new Date().toISOString(),
+    data: req.body
+  });
+});
+
 // ✅ ENHANCED: Save or update medical info with detailed logging
 router.post('/update', upload.single('photo'), async (req, res) => {
   console.log('=== 🏥 MEDICAL UPDATE REQUEST START ===');
+  console.log('🎯 POST /api/medical/update hit successfully!');
   
   try {
     console.log('📦 Headers:', req.headers);
@@ -216,12 +245,30 @@ router.post('/update', upload.single('photo'), async (req, res) => {
   }
 });
 
-// Test endpoint
+// Test GET endpoint
 router.get('/test', (req, res) => {
-  console.log('✅ Medical test endpoint hit');
+  console.log('✅ GET /api/medical/test hit successfully!');
   res.json({ 
     success: true, 
-    message: 'Medical endpoint is working!',
+    message: 'Medical GET endpoint is working!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// ✅ ADD THIS: Debug endpoint to check all medical routes
+router.get('/debug', (req, res) => {
+  console.log('🔧 Medical debug endpoint hit');
+  res.json({
+    success: true,
+    message: 'Medical routes are properly registered!',
+    available_routes: [
+      'GET /api/medical/test',
+      'GET /api/medical/debug', 
+      'POST /api/medical/test-post',
+      'POST /api/medical/test-simple',
+      'POST /api/medical/update',
+      'GET /api/medical/:user_id'
+    ],
     timestamp: new Date().toISOString()
   });
 });
