@@ -1,4 +1,4 @@
-// medical.js - COMPLETE REVISED VERSION WITH TEST ROUTES
+// medical.js - FIXED VERSION WITH WORKING POST ROUTES
 import express from 'express';
 import multer from 'multer';
 import pool from '../db.js';
@@ -46,23 +46,20 @@ const upload = multer({
   }
 });
 
-// ✅ ADD THIS: Test POST route to verify routing works
+// ✅ FIX: Test POST route to verify routing works
 router.post('/test-post', (req, res) => {
   console.log('🎯 POST /api/medical/test-post hit successfully!');
-  console.log('📦 Request headers:', req.headers);
   console.log('📦 Request body:', req.body);
-  console.log('📦 Request method:', req.method);
   
   res.json({ 
     success: true, 
     message: 'POST request to medical route is working perfectly! 🎉',
     timestamp: new Date().toISOString(),
-    receivedData: req.body,
-    method: req.method
+    receivedData: req.body
   });
 });
 
-// ✅ ADD THIS: Simple POST without multer for testing
+// ✅ FIX: Simple POST without multer for testing
 router.post('/test-simple', (req, res) => {
   console.log('🎯 POST /api/medical/test-simple hit successfully!');
   
@@ -74,32 +71,18 @@ router.post('/test-simple', (req, res) => {
   });
 });
 
-// ✅ ENHANCED: Save or update medical info with detailed logging
+// ✅ FIX: Save or update medical info
 router.post('/update', upload.single('photo'), async (req, res) => {
   console.log('=== 🏥 MEDICAL UPDATE REQUEST START ===');
-  console.log('🎯 POST /api/medical/update hit successfully!');
   
   try {
-    console.log('📦 Headers:', req.headers);
     console.log('📦 Request body keys:', Object.keys(req.body));
-    console.log('📦 Full request body:', req.body);
-    console.log('📸 File details:', req.file);
-    
-    // Check if user_id exists
-    if (!req.body.user_id) {
-      console.log('❌ user_id is missing from request body');
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required' 
-      });
-    }
+    console.log('📸 File:', req.file ? 'Uploaded' : 'No file');
 
     // Convert user_id to integer
     const user_id = parseInt(req.body.user_id);
-    console.log('🔍 Raw user_id:', req.body.user_id, 'Parsed user_id:', user_id);
     
     if (!user_id || isNaN(user_id)) {
-      console.log('❌ Invalid user_id format');
       return res.status(400).json({ 
         success: false,
         message: 'Invalid user ID format' 
@@ -110,11 +93,7 @@ router.post('/update', upload.single('photo'), async (req, res) => {
     const requiredFields = ['full_name', 'dob', 'blood_type', 'address', 'emergency_contact'];
     const missingFields = requiredFields.filter(field => !req.body[field]);
     
-    console.log('📋 Field check - Required:', requiredFields);
-    console.log('📋 Field check - Missing:', missingFields);
-    
     if (missingFields.length > 0) {
-      console.log('❌ Missing required fields:', missingFields);
       return res.status(400).json({ 
         success: false,
         message: 'Missing required fields: ' + missingFields.join(', '),
@@ -127,44 +106,20 @@ router.post('/update', upload.single('photo'), async (req, res) => {
       address, allergies = '', medications = '', conditions = '', emergency_contact
     } = req.body;
 
-    console.log('✅ All fields present:', {
-      user_id, full_name, dob, blood_type, address, emergency_contact
-    });
-
     // Handle photo URL
     let photo_url = null;
     if (req.file) {
       photo_url = `/uploads/${req.file.filename}`;
-      console.log('📷 Photo saved:', photo_url);
-    } else {
-      console.log('📷 No photo uploaded');
-    }
-
-    // Check if user exists in users table
-    console.log('🔍 Checking if user exists in database...');
-    const userCheck = await pool.query('SELECT id FROM users WHERE id = $1', [user_id]);
-    console.log('👤 User exists:', userCheck.rows.length > 0 ? 'Yes' : 'No');
-
-    if (userCheck.rows.length === 0) {
-      console.log('❌ User not found in database');
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found. Please register first.' 
-      });
     }
 
     // Check if medical info already exists
-    console.log('🔍 Checking existing medical info...');
     const existingQuery = await pool.query(
       `SELECT id FROM medical_info WHERE user_id = $1`,
       [user_id]
     );
 
-    console.log('📊 Existing medical records:', existingQuery.rows.length);
-
     if (existingQuery.rows.length > 0) {
-      console.log('🔄 Updating existing medical info');
-      
+      // Update existing record
       const updateQuery = `
         UPDATE medical_info 
         SET full_name = $2, dob = $3, blood_type = $4, address = $5, 
@@ -174,14 +129,11 @@ router.post('/update', upload.single('photo'), async (req, res) => {
         WHERE user_id = $1
         RETURNING *`;
       
-      const updateParams = [
+      const updateResult = await pool.query(updateQuery, [
         user_id, full_name, dob, blood_type, address, 
         allergies, medications, conditions, emergency_contact, photo_url
-      ];
+      ]);
 
-      console.log('📝 Executing UPDATE query...');
-      const updateResult = await pool.query(updateQuery, updateParams);
-      
       console.log('✅ Medical info updated successfully');
       return res.json({ 
         success: true,
@@ -191,20 +143,16 @@ router.post('/update', upload.single('photo'), async (req, res) => {
     }
 
     // Insert new record
-    console.log('🆕 Inserting new medical info');
     const insertQuery = `
       INSERT INTO medical_info 
         (user_id, full_name, dob, blood_type, address, allergies, medications, conditions, emergency_contact, photo_url)
       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) 
       RETURNING *`;
     
-    const insertParams = [
+    const insertResult = await pool.query(insertQuery, [
       user_id, full_name, dob, blood_type, address, 
       allergies, medications, conditions, emergency_contact, photo_url
-    ];
-
-    console.log('📝 Executing INSERT query...');
-    const insertResult = await pool.query(insertQuery, insertParams);
+    ]);
 
     console.log('✅ Medical info saved successfully');
     res.json({ 
@@ -214,25 +162,14 @@ router.post('/update', upload.single('photo'), async (req, res) => {
     });
 
   } catch (err) {
-    console.error('❌ MEDICAL UPDATE ERROR:');
-    console.error('Error name:', err.name);
-    console.error('Error message:', err.message);
-    console.error('Error code:', err.code);
-    console.error('Error detail:', err.detail);
-    console.error('Error stack:', err.stack);
+    console.error('❌ MEDICAL UPDATE ERROR:', err.message);
     
     let userMessage = 'Failed to save medical information';
     
-    if (err.code === '23502') { // not-null violation
+    if (err.code === '23502') {
       userMessage = 'Missing required information';
-    } else if (err.code === '23505') { // unique violation
+    } else if (err.code === '23505') {
       userMessage = 'Medical information already exists for this user';
-    } else if (err.code === '42703') { // undefined column
-      userMessage = 'Database configuration error';
-    } else if (err.code === '22P02') { // invalid input syntax
-      userMessage = 'Invalid data format provided';
-    } else if (err.code === '23503') { // foreign key violation
-      userMessage = 'User not found. Please register first.';
     }
     
     res.status(500).json({ 
@@ -240,35 +177,14 @@ router.post('/update', upload.single('photo'), async (req, res) => {
       message: userMessage,
       error: err.message
     });
-  } finally {
-    console.log('=== 🏥 MEDICAL UPDATE REQUEST END ===');
   }
 });
 
 // Test GET endpoint
 router.get('/test', (req, res) => {
-  console.log('✅ GET /api/medical/test hit successfully!');
   res.json({ 
     success: true, 
     message: 'Medical GET endpoint is working!',
-    timestamp: new Date().toISOString()
-  });
-});
-
-// ✅ ADD THIS: Debug endpoint to check all medical routes
-router.get('/debug', (req, res) => {
-  console.log('🔧 Medical debug endpoint hit');
-  res.json({
-    success: true,
-    message: 'Medical routes are properly registered!',
-    available_routes: [
-      'GET /api/medical/test',
-      'GET /api/medical/debug', 
-      'POST /api/medical/test-post',
-      'POST /api/medical/test-simple',
-      'POST /api/medical/update',
-      'GET /api/medical/:user_id'
-    ],
     timestamp: new Date().toISOString()
   });
 });
