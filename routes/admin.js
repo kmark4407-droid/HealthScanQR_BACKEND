@@ -1,4 +1,4 @@
-// admin.js - COMPLETE REVISED VERSION WITH FIXED PROFILE PHOTO UPLOAD
+// admin.js - FIXED VERSION WITH CORRECT ROUTE PATHS
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -131,7 +131,7 @@ router.post('/change-user-profile', upload.single('profile_photo'), async (req, 
     res.json({
       success: true,
       message: 'Profile photo updated successfully',
-      new_photo_url: `http://localhost:3000${photoUrl}`
+      new_photo_url: photoUrl
     });
 
   } catch (err) {
@@ -468,13 +468,11 @@ router.get('/users', async (req, res) => {
         if (cleanPhotoPath.startsWith('http')) {
           profile_photo = cleanPhotoPath;
         } else if (cleanPhotoPath.startsWith('/uploads/')) {
-          profile_photo = `http://localhost:3000${cleanPhotoPath}`;
+          profile_photo = `/uploads/${cleanPhotoPath.split('/').pop()}`;
         } else if (cleanPhotoPath.startsWith('uploads/')) {
-          profile_photo = `http://localhost:3000/${cleanPhotoPath}`;
-        } else if (cleanPhotoPath.startsWith('/')) {
-          profile_photo = `http://localhost:3000${cleanPhotoPath}`;
+          profile_photo = `/uploads/${cleanPhotoPath.split('/').pop()}`;
         } else {
-          profile_photo = `http://localhost:3000/uploads/${cleanPhotoPath}`;
+          profile_photo = `/uploads/${cleanPhotoPath}`;
         }
       }
 
@@ -668,9 +666,10 @@ router.post('/unapprove-user', async (req, res) => {
 });
 
 // DELETE USER
-router.post('/delete-user', async (req, res) => {
+router.delete('/delete-user/:user_id', async (req, res) => {
   try {
-    const { user_id, admin_id } = req.body;
+    const { user_id } = req.params;
+    const { admin_id } = req.body;
 
     if (!user_id || !admin_id) {
       return res.status(400).json({ message: 'User ID and Admin ID are required' });
@@ -732,10 +731,10 @@ router.post('/delete-user', async (req, res) => {
 });
 
 // UPDATE MEDICAL INFORMATION
-router.post('/update-medical', async (req, res) => {
+router.put('/update-medical/:user_id', async (req, res) => {
   try {
+    const { user_id } = req.params;
     const {
-      user_id,
       full_name,
       dob,
       blood_type,
@@ -754,28 +753,10 @@ router.post('/update-medical', async (req, res) => {
       });
     }
 
-    let targetUserId = user_id;
-
-    // If user_id is not provided, try to find it using medical information
-    if (!targetUserId) {
-      const userResult = await pool.query(
-        `SELECT user_id FROM medical_info WHERE full_name ILIKE $1 AND dob = $2`,
-        [`%${full_name.trim()}%`, dob]
-      );
-
-      if (userResult.rows.length === 0) {
-        return res.status(404).json({ 
-          message: 'Medical record not found. Please ensure the patient exists in the system.'
-        });
-      }
-
-      targetUserId = userResult.rows[0].user_id;
-    }
-
     // Check if medical record exists for this user
     const existingRecord = await pool.query(
       'SELECT * FROM medical_info WHERE user_id = $1',
-      [targetUserId]
+      [user_id]
     );
 
     if (existingRecord.rows.length === 0) {
@@ -810,7 +791,7 @@ router.post('/update-medical', async (req, res) => {
       medications || '',
       conditions || '',
       emergency_contact,
-      targetUserId
+      user_id
     ];
 
     const result = await pool.query(updateQuery, updateValues);
@@ -822,7 +803,7 @@ router.post('/update-medical', async (req, res) => {
     res.json({
       message: 'Medical information updated successfully',
       medical_info: result.rows[0],
-      user_id: targetUserId,
+      user_id: user_id,
       lastUpdated: result.rows[0].lastupdated
     });
 
