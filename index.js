@@ -1,11 +1,11 @@
-// index.js - COMPLETELY FIXED VERSION
+// index.js - FIXED VERSION WITH PROPER ROUTE ORDER
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 
-// Import routes FIRST
+// ✅ FIX: Import routes at the top
 import authRoutes from './routes/auth.js';
 import medicalRoutes from './routes/medical.js';
 
@@ -36,7 +36,7 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ CRITICAL: Use routes BEFORE any other routes
+// ✅ CRITICAL FIX: Use routes BEFORE health checks
 app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
 
@@ -58,15 +58,17 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// ✅ FIXED: Catch-all handler with method logging
+// Test medical endpoint
+app.get('/api/medical/test', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'Medical endpoint is working! 🎉'
+  });
+});
+
+// ✅ FIXED: Catch-all handler should be LAST
 app.all('*', (req, res) => {
   console.log(`⚠️ Catch-all route hit: ${req.method} ${req.url}`);
-  console.log(`📦 Headers:`, req.headers);
-  
-  if (req.method === 'POST') {
-    console.log(`📦 POST Body:`, req.body);
-  }
-  
   res.status(404).json({ 
     error: 'Endpoint not found',
     method: req.method,
@@ -87,5 +89,6 @@ const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`✅ Routes loaded: auth, medical`);
+  console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
+  console.log(`✅ Medical test: https://healthscanqr-backend.onrender.com/api/medical/test`);
 });
