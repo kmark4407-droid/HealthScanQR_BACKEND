@@ -1,84 +1,50 @@
-// index.js - FIXED VERSION
+// index.js - MINIMAL WORKING VERSION FOR RENDER
 import express from 'express';
 import cors from 'cors';
-import path from 'path';
-import { fileURLToPath } from 'url';
 import 'dotenv/config';
-import authRoutes from './routes/auth.js';
-import medicalRoutes from './routes/medical.js';
-import adminRoutes from './routes/admin.js'; // NOW FIXED
-import pool from './db.js';
 
 const app = express();
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-// CORS Configuration
-const allowedOrigins = [
-  'http://localhost:4200',
-  'https://healthscanqr2025.vercel.app',
-  'https://health-scan-qr2025.vercel.app',
-];
-
+// Basic CORS - SIMPLIFIED
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.indexOf(origin) === -1) {
-      const msg = 'CORS policy violation';
-      return callback(new Error(msg), false);
-    }
-    return callback(null, true);
-  },
+  origin: ['https://healthscanqr2025.vercel.app', 'http://localhost:4200'],
   credentials: true
 }));
 
-app.options('*', cors());
-
-// Middleware
+// Basic middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Serve uploaded images
-app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// Health check
-app.get('/api/health', (_req, res) => {
+// SIMPLE HEALTH CHECK - NO COMPLEX ROUTES
+app.get('/api/health', (req, res) => {
   res.json({ 
-    ok: true, 
-    time: new Date().toISOString(),
+    status: 'OK', 
+    message: 'Server is running perfectly!',
+    timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development'
   });
 });
 
-// Test Neon Database
-app.get('/api/test-neon', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT version() as version, NOW() as time');
-    res.json({
-      success: true,
-      database: result.rows[0],
-      message: 'Database connected!'
-    });
-  } catch (error) {
-    res.status(500).json({
-      success: false,
-      error: error.message
-    });
-  }
+// TEST ROUTE - SIMPLE PATH
+app.get('/api/test', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'API test successful! 🎉' 
+  });
 });
 
-// Routes (NOW WITH FIXED ADMIN ROUTES)
-app.use('/api/auth', authRoutes);
-app.use('/api/medical', medicalRoutes);
-app.use('/api/admin', adminRoutes); // NOW SAFE TO USE
-
-// Catch all handler
+// SIMPLE CATCH-ALL - NO COMPLEX PARAMETERS
 app.get('*', (req, res) => {
-  res.json({ message: 'HealthScan QR API Server' });
+  res.json({ 
+    message: 'HealthScan QR API Server',
+    status: 'Running',
+    available_endpoints: ['/api/health', '/api/test']
+  });
 });
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`🚀 API listening on port ${PORT}`);
+  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`✅ Health check: http://localhost:${PORT}/api/health`);
+  console.log(`✅ Test endpoint: http://localhost:${PORT}/api/test`);
 });
