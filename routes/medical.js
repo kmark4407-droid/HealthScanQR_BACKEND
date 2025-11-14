@@ -1,4 +1,4 @@
-// medical.js - FIXED VERSION WITH WORKING POST ROUTES
+// medical.js - FIXED VERSION WITH WORKING POST ROUTES AND GET ENDPOINT
 import express from 'express';
 import multer from 'multer';
 import pool from '../db.js';
@@ -27,7 +27,7 @@ const storage = multer.diskStorage({
   },
   filename: (req, file, cb) => {
     const uniqueName = Date.now() + '-' + Math.round(Math.random() * 1E9) + path.extname(file.originalname);
-    console.log('📸 Generated filename:', uniqueName);
+    console.log('📄 Generated filename:', uniqueName);
     cb(null, uniqueName);
   }
 });
@@ -46,9 +46,56 @@ const upload = multer({
   }
 });
 
+// ✅ ADD THIS: GET medical information by user_id
+router.get('/:user_id', async (req, res) => {
+  try {
+    const user_id = parseInt(req.params.user_id);
+    
+    if (!user_id || isNaN(user_id)) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Invalid user ID' 
+      });
+    }
+
+    console.log('🔍 Fetching medical info for user:', user_id);
+
+    const result = await pool.query(
+      `SELECT * FROM medical_info WHERE user_id = $1`,
+      [user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('❌ No medical info found for user:', user_id);
+      return res.json({ 
+        success: true,
+        exists: false,
+        message: 'No medical information found for this user'
+      });
+    }
+
+    const medicalInfo = result.rows[0];
+    console.log('✅ Medical info found:', medicalInfo);
+
+    res.json({
+      success: true,
+      exists: true,
+      ...medicalInfo
+    });
+
+  } catch (err) {
+    console.error('❌ Get medical info error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error fetching medical information',
+      error: err.message
+    });
+  }
+});
+
 // ✅ FIX: Test POST route to verify routing works
 router.post('/test-post', (req, res) => {
-  console.log('🎯 POST /api/medical/test-post hit successfully!');
+  console.log('✅ POST /api/medical/test-post hit successfully!');
   console.log('📦 Request body:', req.body);
   
   res.json({ 
@@ -61,7 +108,7 @@ router.post('/test-post', (req, res) => {
 
 // ✅ FIX: Simple POST without multer for testing
 router.post('/test-simple', (req, res) => {
-  console.log('🎯 POST /api/medical/test-simple hit successfully!');
+  console.log('✅ POST /api/medical/test-simple hit successfully!');
   
   res.json({ 
     success: true, 
@@ -77,7 +124,7 @@ router.post('/update', upload.single('photo'), async (req, res) => {
   
   try {
     console.log('📦 Request body keys:', Object.keys(req.body));
-    console.log('📸 File:', req.file ? 'Uploaded' : 'No file');
+    console.log('📄 File:', req.file ? 'Uploaded' : 'No file');
 
     // Convert user_id to integer
     const user_id = parseInt(req.body.user_id);
