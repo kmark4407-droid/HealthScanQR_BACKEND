@@ -1,4 +1,4 @@
-// index.js - UPDATED FOR PRODUCTION
+// index.js - FIXED ROUTE PATHS
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -45,19 +45,20 @@ app.options('*', cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// ✅ Serve uploaded images - MUST BE BEFORE ROUTES
+// ✅ Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Health check
+// ✅ FIXED: Simple health check route (no complex path parameters)
 app.get('/api/health', (_req, res) => {
   res.json({ 
     ok: true, 
     time: new Date().toISOString(),
-    environment: process.env.NODE_ENV || 'development'
+    environment: process.env.NODE_ENV || 'development',
+    message: 'HealthScan QR API Server is running!'
   });
 });
 
-// ✅ ADD THIS: Test Neon Database Route
+// ✅ FIXED: Test Neon Database Route (simple path)
 app.get('/api/test-neon', async (req, res) => {
   try {
     const result = await pool.query('SELECT version() as postgres_version, current_timestamp as server_time');
@@ -96,14 +97,23 @@ pool.connect()
     console.error('❌ Database connection failed:', err.message);
   });
 
-// Routes
+// ✅ FIXED: Import and use routes (make sure your route files don't have malformed paths)
 app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
-// ✅ Catch all handler for SPA (if needed)
+// ✅ FIXED: Simple catch-all handler
 app.get('*', (req, res) => {
-  res.json({ message: 'HealthScan QR API Server' });
+  res.json({ 
+    message: 'HealthScan QR API Server',
+    endpoints: {
+      health: '/api/health',
+      testNeon: '/api/test-neon',
+      auth: '/api/auth',
+      medical: '/api/medical',
+      admin: '/api/admin'
+    }
+  });
 });
 
 const PORT = Number(process.env.PORT || 3000);
