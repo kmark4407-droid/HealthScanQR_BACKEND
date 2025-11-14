@@ -59,6 +59,14 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
+    // ✅ CHECK IF USER HAS MEDICAL INFO
+    const medicalResult = await pool.query(
+      `SELECT * FROM medical_info WHERE user_id = $1`,
+      [user.id]
+    );
+
+    const hasMedicalInfo = medicalResult.rows.length > 0;
+
     // ✅ Include user.id in token payload
     const token = jwt.sign(
       { id: user.id, email: user.email },
@@ -66,7 +74,7 @@ router.post('/login', async (req, res) => {
       { expiresIn: '1h' }
     );
 
-    // ✅ Return both token and user info
+    // ✅ Return both token and user info WITH medical status
     res.json({
       message: '✅ Login successful',
       token,
@@ -75,7 +83,8 @@ router.post('/login', async (req, res) => {
         full_name: user.full_name,
         email: user.email,
         username: user.username
-      }
+      },
+      hasMedicalInfo: hasMedicalInfo  // ✅ NEW: Tell frontend if user has medical data
     });
   } catch (err) {
     console.error('❌ Login error:', err.message);
