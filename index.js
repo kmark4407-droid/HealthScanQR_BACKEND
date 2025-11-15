@@ -1,13 +1,14 @@
-// index.js - FIXED VERSION WITH PROPER ROUTE ORDER
+// index.js - FIXED VERSION WITH ADMIN ROUTES
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import 'dotenv/config';
 
-// ✅ FIX: Import routes at the top
+// ✅ IMPORT ALL ROUTES
 import authRoutes from './routes/auth.js';
 import medicalRoutes from './routes/medical.js';
+import adminRoutes from './routes/admin.js'; // ✅ ADD ADMIN ROUTES
 
 const app = express();
 
@@ -36,9 +37,10 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// ✅ CRITICAL FIX: Use routes BEFORE health checks
+// ✅ USE ALL ROUTES
 app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
+app.use('/api/admin', adminRoutes); // ✅ ADD ADMIN ROUTES
 
 // Health check route
 app.get('/api/health', (req, res) => {
@@ -50,7 +52,7 @@ app.get('/api/health', (req, res) => {
   });
 });
 
-// Test route
+// Test routes
 app.get('/api/test', (req, res) => {
   res.json({ 
     success: true,
@@ -58,7 +60,6 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// Test medical endpoint
 app.get('/api/medical/test', (req, res) => {
   res.json({ 
     success: true,
@@ -66,7 +67,15 @@ app.get('/api/medical/test', (req, res) => {
   });
 });
 
-// ✅ FIXED: Catch-all handler should be LAST
+// ✅ TEST ADMIN ENDPOINT
+app.get('/api/admin/test', (req, res) => {
+  res.json({ 
+    success: true,
+    message: 'Admin endpoint is working! 🎉'
+  });
+});
+
+// Catch-all handler
 app.all('*', (req, res) => {
   console.log(`⚠️ Catch-all route hit: ${req.method} ${req.url}`);
   res.status(404).json({ 
@@ -77,8 +86,10 @@ app.all('*', (req, res) => {
       'GET /api/health',
       'GET /api/test', 
       'GET /api/medical/test',
+      'GET /api/admin/test', // ✅ ADD ADMIN TEST
       'POST /api/auth/register',
       'POST /api/auth/login',
+      'POST /api/admin/admin-login', // ✅ ADD ADMIN LOGIN
       'POST /api/medical/update',
       'GET /api/medical/:user_id'
     ]
@@ -90,5 +101,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`✅ Medical test: https://healthscanqr-backend.onrender.com/api/medical/test`);
+  console.log(`✅ Admin test: https://healthscanqr-backend.onrender.com/api/admin/test`); // ✅ ADD ADMIN TEST
 });
