@@ -1,4 +1,4 @@
-// admin.js - FIXED VERSION WITH CORRECT ROUTE PATHS
+// admin.js - FIXED VERSION WITH ROBUST ACTIVITY LOGS
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -50,132 +50,14 @@ const upload = multer({
   }
 });
 
-// ==================== PROFILE PHOTO UPLOAD ENDPOINT - FIXED ====================
-router.post('/change-user-profile', upload.single('profile_photo'), async (req, res) => {
-  try {
-    const { user_id } = req.body;
-    const file = req.file;
+// ==================== ACTIVITY LOGS ENDPOINTS - FIXED ====================
 
-    console.log('📸 Change profile photo request received:', {
-      user_id: user_id,
-      hasFile: !!file,
-      fileName: file?.filename,
-      fileSize: file?.size,
-      fileType: file?.mimetype,
-      filePath: file?.path
-    });
-
-    if (!user_id) {
-      // Clean up uploaded file if user_id is missing
-      if (file) {
-        fs.unlinkSync(file.path);
-      }
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required' 
-      });
-    }
-
-    if (!file) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Profile photo file is required' 
-      });
-    }
-
-    // Generate photo URL
-    const photoUrl = `/uploads/${file.filename}`;
-    
-    console.log('💾 Updating database with photo URL:', photoUrl);
-    
-    // Update medical_info with new photo URL
-    const result = await pool.query(
-      `UPDATE medical_info 
-       SET photo_url = $1, updated_at = NOW()
-       WHERE user_id = $2
-       RETURNING *`,
-      [photoUrl, user_id]
-    );
-
-    if (result.rows.length === 0) {
-      console.log('⚠️ No existing medical_info record, creating one...');
-      
-      // If no medical_info record exists, create one
-      const userResult = await pool.query(
-        'SELECT email FROM users WHERE id = $1',
-        [user_id]
-      );
-      
-      if (userResult.rows.length === 0) {
-        // Clean up file if user doesn't exist
-        fs.unlinkSync(file.path);
-        return res.status(404).json({
-          success: false,
-          message: 'User not found'
-        });
-      }
-      
-      const userEmail = userResult.rows[0]?.email || 'Unknown User';
-      
-      const insertResult = await pool.query(
-        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
-         VALUES ($1, $2, $3, NOW()) RETURNING *`,
-        [user_id, photoUrl, userEmail]
-      );
-      
-      console.log('✅ Created new medical_info record');
-    }
-
-    console.log('✅ Profile photo updated successfully for user:', user_id);
-
-    res.json({
-      success: true,
-      message: 'Profile photo updated successfully',
-      new_photo_url: photoUrl
-    });
-
-  } catch (err) {
-    console.error('❌ Change user profile error:', err.message);
-    
-    // Clean up uploaded file on error
-    if (req.file) {
-      try {
-        fs.unlinkSync(req.file.path);
-        console.log('🗑️ Cleaned up uploaded file due to error');
-      } catch (cleanupError) {
-        console.error('Error cleaning up file:', cleanupError.message);
-      }
-    }
-    
-    // Handle multer errors
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({
-          success: false,
-          message: 'File size too large. Please upload images smaller than 5MB.'
-        });
-      }
-      return res.status(400).json({
-        success: false,
-        message: `File upload error: ${err.message}`
-      });
-    }
-    
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error updating profile photo: ' + err.message 
-    });
-  }
-});
-
-// ==================== ACTIVITY LOGS ENDPOINTS ====================
-
-// GET ACTIVITY LOGS
+// GET ACTIVITY LOGS - FIXED: More robust error handling
 router.get('/activity-logs', async (req, res) => {
   try {
     const { admin_id } = req.query;
     
-    console.log('📋 Fetching activity logs for admin:', admin_id);
+    console.log('📋 Fetching activity logs...', { admin_id });
 
     // Check if activity_logs table exists
     const tableCheck = await pool.query(`
@@ -204,7 +86,7 @@ router.get('/activity-logs', async (req, res) => {
       
       console.log('✅ Created activity_logs table');
       
-      // Insert a sample log entry
+      // Insert initial log entry
       await pool.query(`
         INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
         VALUES ('SYSTEM', 'Activity logs system initialized', $1, 'System', NOW())
@@ -227,27 +109,15 @@ router.get('/activity-logs', async (req, res) => {
       });
     }
 
-    // Build query based on whether admin_id is provided
-    let query;
+    // Build query - FIXED: Simplified without admin_id filter first
+    let query = `
+      SELECT * FROM activity_logs 
+      ORDER BY timestamp DESC 
+      LIMIT 100
+    `;
     let values = [];
 
-    if (admin_id) {
-      query = `
-        SELECT * FROM activity_logs 
-        WHERE admin_id = $1 
-        ORDER BY timestamp DESC 
-        LIMIT 100
-      `;
-      values = [admin_id];
-    } else {
-      query = `
-        SELECT * FROM activity_logs 
-        ORDER BY timestamp DESC 
-        LIMIT 100
-      `;
-    }
-
-    console.log('📝 Executing logs query:', query, values);
+    console.log('📝 Executing logs query:', query);
     const result = await pool.query(query, values);
     
     console.log(`✅ Found ${result.rows.length} activity logs`);
@@ -271,22 +141,25 @@ router.get('/activity-logs', async (req, res) => {
   } catch (err) {
     console.error('❌ Get activity logs error:', err.message);
     
-    // Return empty array instead of error for better UX
+    // Return empty array with success for better UX
     res.json({
       success: true,
       logs: [],
-      message: 'Using fallback logs due to: ' + err.message
+      message: 'No logs available: ' + err.message
     });
   }
 });
 
-// LOG ACTIVITY
+// LOG ACTIVITY - FIXED: Better error handling
 router.post('/log-activity', async (req, res) => {
   try {
     const { action, description, admin_id, admin_name, timestamp } = req.body;
 
     if (!action) {
-      return res.status(400).json({ message: 'Action is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Action is required' 
+      });
     }
 
     console.log('📝 Logging activity:', { action, description, admin_id, admin_name });
@@ -342,7 +215,7 @@ router.post('/log-activity', async (req, res) => {
   }
 });
 
-// CLEAR LOGS
+// CLEAR LOGS - FIXED: Better response
 router.delete('/clear-logs', async (req, res) => {
   try {
     console.log('🗑️ Clearing all activity logs...');
@@ -368,7 +241,8 @@ router.delete('/clear-logs', async (req, res) => {
 
     res.json({
       success: true,
-      message: `All activity logs cleared successfully (${result.rowCount} records removed)`
+      message: `All activity logs cleared successfully (${result.rowCount} records removed)`,
+      records_removed: result.rowCount
     });
 
   } catch (err) {
@@ -380,7 +254,7 @@ router.delete('/clear-logs', async (req, res) => {
   }
 });
 
-// ALTERNATIVE LOGS ENDPOINT (fallback)
+// ALTERNATIVE LOGS ENDPOINT (fallback) - FIXED
 router.get('/logs', async (req, res) => {
   try {
     console.log('📋 Fetching logs via alternative endpoint...');
@@ -423,14 +297,211 @@ router.get('/logs', async (req, res) => {
   }
 });
 
+// ==================== BASE64 PROFILE PHOTO UPLOAD ====================
+router.post('/change-user-profile-base64', async (req, res) => {
+  try {
+    const { user_id, profile_photo, filename } = req.body;
+
+    console.log('📸 Base64 profile photo request received:', {
+      user_id: user_id,
+      hasBase64: !!profile_photo,
+      base64Length: profile_photo ? profile_photo.length : 0,
+      filename: filename
+    });
+
+    if (!user_id) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'User ID is required' 
+      });
+    }
+
+    if (!profile_photo) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Profile photo data is required' 
+      });
+    }
+
+    // Validate base64 image
+    if (!profile_photo.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid image format. Please provide a valid base64 image.'
+      });
+    }
+
+    // Check if user exists
+    const userResult = await pool.query(
+      'SELECT id, email FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    // Store base64 directly in database
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [profile_photo, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, profile_photo, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record with base64 photo');
+    }
+
+    console.log('✅ Base64 profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: profile_photo
+    });
+
+  } catch (err) {
+    console.error('❌ Base64 profile photo error:', err.message);
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
+// ==================== PROFILE PHOTO UPLOAD ENDPOINT ====================
+router.post('/change-user-profile', upload.single('profile_photo'), async (req, res) => {
+  try {
+    const { user_id } = req.body;
+    const file = req.file;
+
+    console.log('📸 Change profile photo request received:', {
+      user_id: user_id,
+      hasFile: !!file,
+      fileName: file?.filename
+    });
+
+    if (!user_id) {
+      if (file) {
+        fs.unlinkSync(file.path);
+      }
+      return res.status(400).json({ 
+        success: false,
+        message: 'User ID is required' 
+      });
+    }
+
+    if (!file) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Profile photo file is required' 
+      });
+    }
+
+    // Generate photo URL
+    const photoUrl = `/uploads/${file.filename}`;
+    
+    console.log('💾 Updating database with photo URL:', photoUrl);
+    
+    // Update medical_info with new photo URL
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [photoUrl, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userResult = await pool.query(
+        'SELECT email FROM users WHERE id = $1',
+        [user_id]
+      );
+      
+      if (userResult.rows.length === 0) {
+        fs.unlinkSync(file.path);
+        return res.status(404).json({
+          success: false,
+          message: 'User not found'
+        });
+      }
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, photoUrl, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record');
+    }
+
+    console.log('✅ Profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: photoUrl
+    });
+
+  } catch (err) {
+    console.error('❌ Change user profile error:', err.message);
+    
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('🗑️ Cleaned up uploaded file due to error');
+      } catch (cleanupError) {
+        console.error('Error cleaning up file:', cleanupError.message);
+      }
+    }
+    
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          message: 'File size too large. Please upload images smaller than 5MB.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        message: `File upload error: ${err.message}`
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
 // ==================== USER MANAGEMENT ENDPOINTS ====================
 
-// GET ALL USERS
+// GET ALL USERS - UPDATED FOR BASE64
 router.get('/users', async (req, res) => {
   try {
     console.log('🔍 Fetching users from database...');
 
-    // Build query to get users with medical info
     const query = `
       SELECT 
         u.id as user_id,
@@ -458,21 +529,18 @@ router.get('/users', async (req, res) => {
     const result = await pool.query(query);
     console.log(`✅ Found ${result.rows.length} users`);
 
-    // Process the results with photo handling
+    // Process the results - support both base64 and file paths
     const usersWithPhotos = result.rows.map(user => {
-      let profile_photo = 'https://via.placeholder.com/200?text=No+Photo';
+      let profile_photo = user.profile_photo;
       
-      if (user.profile_photo) {
-        const cleanPhotoPath = user.profile_photo.trim();
-        
-        if (cleanPhotoPath.startsWith('http')) {
-          profile_photo = cleanPhotoPath;
-        } else if (cleanPhotoPath.startsWith('/uploads/')) {
-          profile_photo = `/uploads/${cleanPhotoPath.split('/').pop()}`;
-        } else if (cleanPhotoPath.startsWith('uploads/')) {
-          profile_photo = `/uploads/${cleanPhotoPath.split('/').pop()}`;
+      // If it's a file path, convert to full URL
+      if (profile_photo && !profile_photo.startsWith('data:image/') && !profile_photo.startsWith('http')) {
+        if (profile_photo.startsWith('/uploads/')) {
+          profile_photo = profile_photo;
+        } else if (profile_photo.startsWith('uploads/')) {
+          profile_photo = `/${profile_photo}`;
         } else {
-          profile_photo = `/uploads/${cleanPhotoPath}`;
+          profile_photo = `/uploads/${profile_photo}`;
         }
       }
 
@@ -480,7 +548,7 @@ router.get('/users', async (req, res) => {
         user_id: user.user_id,
         email: user.email,
         created_at: user.created_at,
-        profile_photo: profile_photo,
+        profile_photo: profile_photo || '',
         full_name: user.full_name || 'Not provided',
         dob: user.dob || null,
         blood_type: user.blood_type || 'Not provided',
@@ -504,7 +572,7 @@ router.get('/users', async (req, res) => {
   } catch (err) {
     console.error('❌ Get users error:', err.message);
     
-    // Try a simple fallback
+    // Fallback to simple user query
     try {
       const simpleResult = await pool.query('SELECT id as user_id, email, created_at FROM users ORDER BY created_at DESC');
       
@@ -512,7 +580,7 @@ router.get('/users', async (req, res) => {
         user_id: user.user_id,
         email: user.email,
         created_at: user.created_at,
-        profile_photo: 'https://via.placeholder.com/200?text=No+Photo',
+        profile_photo: '',
         full_name: 'Not available',
         blood_type: 'Not available',
         address: 'Not available',
