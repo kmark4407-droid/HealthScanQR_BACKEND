@@ -1,4 +1,4 @@
-// index.js - FIXED VERSION WITH BODY PARSER SOLUTION
+// index.js - FIXED VERSION WITH CORS PREFLIGHT SOLUTION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -16,7 +16,11 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// CORS Configuration - MOVE THIS FIRST
+// **FIX: Body parsing middleware FIRST**
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+
+// **FIX: Enhanced CORS configuration**
 app.use(cors({
   origin: [
     'http://localhost:4200', 
@@ -25,14 +29,17 @@ app.use(cors({
   ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
 }));
 
-app.options('*', cors());
-
-// Middleware - FIXED ORDER
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+// **FIX: Handle preflight requests explicitly**
+app.options('*', (req, res) => {
+  res.header('Access-Control-Allow-Origin', req.headers.origin);
+  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With');
+  res.header('Access-Control-Allow-Credentials', 'true');
+  res.status(200).send();
+});
 
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -65,22 +72,40 @@ app.get('/api/neon-auth/test', (req, res) => {
   });
 });
 
-// FIXED Neon Auth Register with BODY DEBUGGING
-app.post('/api/neon-auth/register', async (req, res) => {
-  try {
-    console.log('🔐 Register request headers:', req.headers);
-    console.log('🔐 Register request body:', req.body);
-    console.log('🔐 Register request method:', req.method);
+// **FIX: Add raw body parsing for debugging**
+app.post('/api/neon-auth/register', (req, res, next) => {
+  console.log('🔐 RAW Register request received');
+  console.log('🔐 Headers:', req.headers);
+  console.log('🔐 Method:', req.method);
+  console.log('🔐 URL:', req.url);
+  
+  // Check if body is being parsed
+  let bodyData = '';
+  req.on('data', chunk => {
+    bodyData += chunk.toString();
+  });
+  
+  req.on('end', () => {
+    console.log('🔐 RAW Body data:', bodyData);
+    console.log('🔐 Parsed body by express:', req.body);
     
+    // If we have raw data but express didn't parse it, parse it manually
+    if (bodyData && (!req.body || Object.keys(req.body).length === 0)) {
+      try {
+        req.body = JSON.parse(bodyData);
+        console.log('🔐 Manually parsed body:', req.body);
+      } catch (e) {
+        console.error('🔐 Manual parse error:', e);
+      }
+    }
+    
+    next();
+  });
+}, async (req, res) => {
+  try {
     const { email, password, name } = req.body;
     
-    // Debug: Log everything about the request
-    console.log('🔐 Request details:', {
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length'],
-      bodyKeys: Object.keys(req.body),
-      bodyValues: req.body
-    });
+    console.log('🔐 Final body for processing:', req.body);
     
     // Validate required fields
     if (!email || !password || !name) {
@@ -92,10 +117,7 @@ app.post('/api/neon-auth/register', async (req, res) => {
           password: password ? '***' : 'missing', 
           name: name || 'missing' 
         },
-        debug: {
-          bodyKeys: Object.keys(req.body),
-          contentType: req.headers['content-type']
-        }
+        rawBody: req.rawBody || 'not captured'
       });
     }
     
@@ -175,19 +197,38 @@ app.post('/api/neon-auth/register', async (req, res) => {
   }
 });
 
-// SIMPLIFIED TEST ENDPOINT - Let's test if body parsing works
-app.post('/api/neon-auth/debug-test', (req, res) => {
-  console.log('🔍 DEBUG TEST - Request body:', req.body);
-  console.log('🔍 DEBUG TEST - Headers:', req.headers);
+// **FIX: Simple test endpoint with raw body capture**
+app.post('/api/neon-auth/simple-test', (req, res) => {
+  let rawBody = '';
+  req.on('data', chunk => {
+    rawBody += chunk.toString();
+  });
   
-  res.json({
-    success: true,
-    message: 'Debug test successful',
-    requestBody: req.body,
-    headers: {
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length']
+  req.on('end', () => {
+    console.log('🔍 SIMPLE TEST - Raw body:', rawBody);
+    console.log('🔍 SIMPLE TEST - Parsed body:', req.body);
+    console.log('🔍 SIMPLE TEST - Content-Type:', req.headers['content-type']);
+    
+    let parsedBody = {};
+    try {
+      if (rawBody) {
+        parsedBody = JSON.parse(rawBody);
+      }
+    } catch (e) {
+      console.error('🔍 SIMPLE TEST - Parse error:', e);
     }
+    
+    res.json({
+      success: true,
+      message: 'Simple test completed',
+      rawBody: rawBody,
+      parsedByExpress: req.body,
+      manuallyParsed: parsedBody,
+      headers: {
+        contentType: req.headers['content-type'],
+        contentLength: req.headers['content-length']
+      }
+    });
   });
 });
 
@@ -242,9 +283,7 @@ app.all('*', (req, res) => {
       'GET /api/medical/test',
       'GET /api/admin/test',
       'GET /api/neon-auth/test',
-      'POST /api/neon-auth/debug-test', // NEW DEBUG ENDPOINT
-      'POST /api/auth/register',
-      'POST /api/auth/login',
+      'POST /api/neon-auth/simple-test', // NEW SIMPLE TEST
       'POST /api/neon-auth/register',
       'POST /api/neon-auth/login',
       'GET /api/neon-auth/me',
@@ -262,6 +301,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🔑 Neon Auth Project ID: ${process.env.STACK_PROJECT_ID ? '✅ Loaded' : '❌ Missing'}`);
   console.log(`🔐 Neon Auth Secret Key: ${process.env.STACK_SECRET_SERVER_KEY ? '✅ Loaded' : '❌ Missing'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`✅ Neon Auth test: https://healthscanqr-backend.onrender.com/api/neon-auth/test`);
-  console.log(`🎉 Server started successfully!`);
+  console.log(`🎉 Server started with enhanced CORS!`);
 });
