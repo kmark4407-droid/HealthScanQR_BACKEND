@@ -1,4 +1,4 @@
-// admin.js - FIXED ADMIN LOGIN
+// admin.js - RESTORED WORKING DELETE LOGIC
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -22,7 +22,6 @@ if (!fs.existsSync(uploadsDir)) {
   console.log('✅ Created uploads directory:', uploadsDir);
 }
 
-// Configure multer for file uploads
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     cb(null, uploadsDir);
@@ -31,7 +30,6 @@ const storage = multer.diskStorage({
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const fileExtension = file.originalname.split('.').pop();
     const filename = 'profile-' + uniqueSuffix + '.' + fileExtension;
-    console.log('📁 Generated filename:', filename);
     cb(null, filename);
   }
 });
@@ -39,7 +37,7 @@ const storage = multer.diskStorage({
 const upload = multer({
   storage: storage,
   limits: {
-    fileSize: 5 * 1024 * 1024 // 5MB limit
+    fileSize: 5 * 1024 * 1024
   },
   fileFilter: (req, file, cb) => {
     const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png', 'image/gif', 'image/webp'];
@@ -51,14 +49,12 @@ const upload = multer({
   }
 });
 
-// ==================== ADMIN AUTHENTICATION - FIXED ====================
+// ==================== ADMIN AUTHENTICATION ====================
 
-// ADMIN LOGIN - FIXED: Using your original logic
+// ADMIN LOGIN
 router.post('/admin-login', async (req, res) => {
   try {
     const { email, password } = req.body;
-
-    console.log('🔐 Admin login attempt:', { email });
 
     if (!email || !password) {
       return res.status(400).json({ 
@@ -67,14 +63,12 @@ router.post('/admin-login', async (req, res) => {
       });
     }
 
-    // Find admin by email - using your existing admins table
     const result = await pool.query(
       `SELECT * FROM admins WHERE email = $1`,
       [email]
     );
 
     if (result.rows.length === 0) {
-      console.log('❌ Admin not found:', email);
       return res.status(401).json({ 
         success: false,
         error: 'Invalid admin credentials' 
@@ -82,20 +76,15 @@ router.post('/admin-login', async (req, res) => {
     }
 
     const admin = result.rows[0];
-    console.log('✅ Admin found:', admin.email);
-
-    // Verify password
     const validPassword = await bcrypt.compare(password, admin.password);
 
     if (!validPassword) {
-      console.log('❌ Invalid password for admin:', email);
       return res.status(401).json({ 
         success: false,
         error: 'Invalid admin credentials' 
       });
     }
 
-    // Generate JWT token
     const token = jwt.sign(
       { 
         adminId: admin.id, 
@@ -105,8 +94,6 @@ router.post('/admin-login', async (req, res) => {
       process.env.JWT_SECRET || 'secret_key',
       { expiresIn: '24h' }
     );
-
-    console.log('✅ Admin login successful:', admin.email);
 
     res.json({
       success: true,
@@ -129,7 +116,199 @@ router.post('/admin-login', async (req, res) => {
   }
 });
 
-// ==================== USER MANAGEMENT ====================
+// ==================== ACTIVITY LOGS - ORIGINAL WORKING VERSION ====================
+
+// GET ACTIVITY LOGS
+router.get('/activity-logs', async (req, res) => {
+  try {
+    const { admin_id } = req.query;
+    
+    console.log('📋 Fetching activity logs...', { admin_id });
+
+    // Check if activity_logs table exists
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'activity_logs'
+      )
+    `);
+
+    if (!tableCheck.rows[0].exists) {
+      console.log('⚠️ activity_logs table does not exist, creating it...');
+      
+      await pool.query(`
+        CREATE TABLE activity_logs (
+          id SERIAL PRIMARY KEY,
+          action VARCHAR(50) NOT NULL,
+          description TEXT,
+          admin_id INTEGER,
+          admin_name VARCHAR(255),
+          timestamp TIMESTAMP DEFAULT NOW(),
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      
+      console.log('✅ Created activity_logs table');
+      
+      await pool.query(`
+        INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+        VALUES ('SYSTEM', 'Activity logs system initialized', $1, 'System', NOW())
+      `, [admin_id || 1]);
+      
+      return res.json({
+        success: true,
+        logs: [
+          {
+            id: 1,
+            action: 'SYSTEM',
+            description: 'Activity logs system initialized',
+            admin_id: admin_id || 1,
+            admin_name: 'System',
+            timestamp: new Date().toISOString(),
+            created_at: new Date().toISOString()
+          }
+        ],
+        message: 'Activity logs table created successfully'
+      });
+    }
+
+    let query = `SELECT * FROM activity_logs ORDER BY timestamp DESC LIMIT 100`;
+    let values = [];
+
+    console.log('📝 Executing logs query:', query);
+    const result = await pool.query(query, values);
+    
+    console.log(`✅ Found ${result.rows.length} activity logs`);
+
+    const formattedLogs = result.rows.map(log => ({
+      id: log.id,
+      action: log.action,
+      description: log.description,
+      admin_id: log.admin_id,
+      admin_name: log.admin_name,
+      timestamp: log.timestamp,
+      created_at: log.created_at
+    }));
+
+    res.json({
+      success: true,
+      logs: formattedLogs
+    });
+
+  } catch (err) {
+    console.error('❌ Get activity logs error:', err.message);
+    
+    res.json({
+      success: true,
+      logs: [],
+      message: 'No logs available: ' + err.message
+    });
+  }
+});
+
+// LOG ACTIVITY
+router.post('/log-activity', async (req, res) => {
+  try {
+    const { action, description, admin_id, admin_name, timestamp } = req.body;
+
+    if (!action) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Action is required' 
+      });
+    }
+
+    console.log('📝 Logging activity:', { action, description, admin_id, admin_name });
+
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'activity_logs'
+      )
+    `);
+
+    if (!tableCheck.rows[0].exists) {
+      await pool.query(`
+        CREATE TABLE activity_logs (
+          id SERIAL PRIMARY KEY,
+          action VARCHAR(50) NOT NULL,
+          description TEXT,
+          admin_id INTEGER,
+          admin_name VARCHAR(255),
+          timestamp TIMESTAMP DEFAULT NOW(),
+          created_at TIMESTAMP DEFAULT NOW()
+        )
+      `);
+      console.log('✅ Created activity_logs table for logging');
+    }
+
+    const result = await pool.query(
+      `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [action, description, admin_id, admin_name, timestamp || new Date()]
+    );
+
+    console.log('✅ Activity logged successfully:', result.rows[0].id);
+
+    res.json({
+      success: true,
+      log: result.rows[0],
+      message: 'Activity logged successfully'
+    });
+
+  } catch (err) {
+    console.error('❌ Log activity error:', err.message);
+    
+    res.json({
+      success: true,
+      message: 'Activity recorded (log may not be saved)'
+    });
+  }
+});
+
+// CLEAR LOGS
+router.delete('/clear-logs', async (req, res) => {
+  try {
+    console.log('🗑️ Clearing all activity logs...');
+
+    const tableCheck = await pool.query(`
+      SELECT EXISTS (
+        SELECT FROM information_schema.tables 
+        WHERE table_schema = 'public' 
+        AND table_name = 'activity_logs'
+      )
+    `);
+
+    if (!tableCheck.rows[0].exists) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'Activity logs table does not exist' 
+      });
+    }
+
+    const result = await pool.query('DELETE FROM activity_logs');
+    
+    console.log('✅ All activity logs cleared. Rows affected:', result.rowCount);
+
+    res.json({
+      success: true,
+      message: `All activity logs cleared successfully (${result.rowCount} records removed)`,
+      records_removed: result.rowCount
+    });
+
+  } catch (err) {
+    console.error('❌ Clear logs error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Error clearing activity logs: ' + err.message 
+    });
+  }
+});
+
+// ==================== USER MANAGEMENT - ORIGINAL WORKING DELETE ====================
 
 // GET ALL USERS
 router.get('/users', async (req, res) => {
@@ -140,9 +319,6 @@ router.get('/users', async (req, res) => {
       SELECT 
         u.id as user_id,
         u.email,
-        u.username,
-        u.email_verified,
-        u.firebase_uid,
         u.created_at,
         mi.photo_url as profile_photo,
         COALESCE(mi.full_name, 'Not provided') as full_name,
@@ -162,15 +338,12 @@ router.get('/users', async (req, res) => {
       ORDER BY u.created_at DESC
     `;
 
-    console.log('📝 Executing query:', query);
     const result = await pool.query(query);
     console.log(`✅ Found ${result.rows.length} users`);
 
-    // Process the results - support both base64 and file paths
     const usersWithPhotos = result.rows.map(user => {
       let profile_photo = user.profile_photo;
       
-      // If it's a file path, convert to full URL
       if (profile_photo && !profile_photo.startsWith('data:image/') && !profile_photo.startsWith('http')) {
         if (profile_photo.startsWith('/uploads/')) {
           profile_photo = profile_photo;
@@ -184,9 +357,6 @@ router.get('/users', async (req, res) => {
       return {
         user_id: user.user_id,
         email: user.email,
-        username: user.username,
-        email_verified: user.email_verified,
-        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: profile_photo || '',
         full_name: user.full_name || 'Not provided',
@@ -212,16 +382,12 @@ router.get('/users', async (req, res) => {
   } catch (err) {
     console.error('❌ Get users error:', err.message);
     
-    // Fallback to simple user query
     try {
-      const simpleResult = await pool.query('SELECT id as user_id, email, username, email_verified, firebase_uid, created_at FROM users ORDER BY created_at DESC');
+      const simpleResult = await pool.query('SELECT id as user_id, email, created_at FROM users ORDER BY created_at DESC');
       
       const simpleUsers = simpleResult.rows.map(user => ({
         user_id: user.user_id,
         email: user.email,
-        username: user.username,
-        email_verified: user.email_verified,
-        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: '',
         full_name: 'Not available',
@@ -248,69 +414,26 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// GET USER STATISTICS
-router.get('/stats', async (req, res) => {
+// ✅ DELETE USER - ORIGINAL WORKING VERSION + FIREBASE CLEANUP
+router.delete('/delete-user/:user_id', async (req, res) => {
   try {
-    // Total users
-    const totalUsersResult = await pool.query('SELECT COUNT(*) FROM users');
-    const totalUsers = parseInt(totalUsersResult.rows[0].count);
+    const { user_id } = req.params;
+    const { admin_id } = req.body;
 
-    // Verified users
-    const verifiedUsersResult = await pool.query('SELECT COUNT(*) FROM users WHERE email_verified = true');
-    const verifiedUsers = parseInt(verifiedUsersResult.rows[0].count);
-
-    // Users with medical info
-    const medicalUsersResult = await pool.query('SELECT COUNT(DISTINCT user_id) FROM medical_info');
-    const medicalUsers = parseInt(medicalUsersResult.rows[0].count);
-
-    // Recent registrations (last 7 days)
-    const recentUsersResult = await pool.query(
-      'SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL \'7 days\''
-    );
-    const recentUsers = parseInt(recentUsersResult.rows[0].count);
-
-    // Users with Firebase UID
-    const firebaseUsersResult = await pool.query('SELECT COUNT(*) FROM users WHERE firebase_uid IS NOT NULL');
-    const firebaseUsers = parseInt(firebaseUsersResult.rows[0].count);
-
-    res.json({
-      success: true,
-      stats: {
-        totalUsers,
-        verifiedUsers,
-        unverifiedUsers: totalUsers - verifiedUsers,
-        medicalUsers,
-        firebaseUsers,
-        recentRegistrations: recentUsers,
-        verificationRate: totalUsers > 0 ? ((verifiedUsers / totalUsers) * 100).toFixed(1) : 0
-      }
-    });
-
-  } catch (err) {
-    console.error('❌ Stats error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error fetching statistics' 
-    });
-  }
-});
-
-// GET USER DETAILS
-router.get('/user/:userId', async (req, res) => {
-  try {
-    const userId = parseInt(req.params.userId);
-    
-    if (!userId || isNaN(userId)) {
+    if (!user_id || !admin_id) {
       return res.status(400).json({ 
         success: false,
-        error: 'Valid user ID is required.' 
+        error: 'User ID and Admin ID are required' 
       });
     }
 
+    // Get user info for logging before deletion
     const userResult = await pool.query(
-      `SELECT id, full_name, email, username, email_verified, firebase_uid, created_at 
-       FROM users WHERE id = $1`,
-      [userId]
+      `SELECT u.email, u.firebase_uid, mi.full_name 
+       FROM users u 
+       LEFT JOIN medical_info mi ON u.id = mi.user_id 
+       WHERE u.id = $1`,
+      [user_id]
     );
 
     if (userResult.rows.length === 0) {
@@ -320,173 +443,70 @@ router.get('/user/:userId', async (req, res) => {
       });
     }
 
-    const user = userResult.rows[0];
+    const userEmail = userResult.rows[0].email;
+    const userFirebaseUid = userResult.rows[0].firebase_uid;
+    const userName = userResult.rows[0].full_name || userEmail;
 
-    // Get user's medical info
-    const medicalResult = await pool.query(
-      'SELECT * FROM medical_info WHERE user_id = $1',
-      [userId]
-    );
+    console.log(`🗑️ Starting deletion process for user: ${userEmail} (Firebase UID: ${userFirebaseUid})`);
 
-    res.json({
-      success: true,
-      user: user,
-      medicalInfo: medicalResult.rows[0] || null,
-      hasMedicalInfo: medicalResult.rows.length > 0
-    });
-
-  } catch (err) {
-    console.error('❌ User details error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error fetching user details' 
-    });
-  }
-});
-
-// ✅ ADMIN: DELETE USER COMPLETELY (from both Neon DB and Firebase)
-router.delete('/user/:userId', async (req, res) => {
-  try {
-    const userId = parseInt(req.params.userId);
-    
-    if (!userId || isNaN(userId)) {
-      return res.status(400).json({ 
-        success: false,
-        error: 'Valid user ID is required.' 
-      });
-    }
-
-    // Get user data
-    const userResult = await pool.query(
-      'SELECT * FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'User not found' 
-      });
-    }
-
-    const user = userResult.rows[0];
-
-    // Delete from Firebase Auth
-    if (user.firebase_uid) {
-      console.log('🗑️ Admin: Deleting Firebase user:', user.firebase_uid);
-      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
-      
-      if (firebaseResult.success) {
-        console.log('✅ Firebase user deletion completed');
-      } else {
-        console.log('⚠️ Firebase user deletion may need manual cleanup');
+    // ✅ ADDED: Delete from Firebase Auth if UID exists
+    if (userFirebaseUid) {
+      console.log('🔥 Deleting Firebase user:', userFirebaseUid);
+      try {
+        const firebaseResult = await firebaseEmailService.deleteFirebaseUser(userFirebaseUid);
+        if (firebaseResult.success) {
+          console.log('✅ Firebase user deletion initiated');
+        }
+      } catch (firebaseError) {
+        console.log('⚠️ Firebase deletion failed, continuing with DB deletion:', firebaseError.message);
       }
-    } else {
-      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
     }
 
-    // Delete user's medical records
+    // Start a transaction to ensure all deletions happen
+    const client = await pool.connect();
+    
     try {
-      await pool.query(
-        'DELETE FROM medical_info WHERE user_id = $1',
-        [userId]
-      );
-      console.log('✅ Medical records deleted');
-    } catch (medicalError) {
-      console.log('⚠️ No medical records to delete:', medicalError.message);
+      await client.query('BEGIN');
+
+      // Delete from medical_info first (due to foreign key constraint)
+      await client.query('DELETE FROM medical_info WHERE user_id = $1', [user_id]);
+      
+      // Delete from users
+      await client.query('DELETE FROM users WHERE id = $1', [user_id]);
+
+      await client.query('COMMIT');
+
+      console.log(`✅ User ${userEmail} deleted successfully from database`);
+
+      res.json({
+        success: true,
+        message: 'User deleted successfully',
+        deleted_user: {
+          email: userEmail,
+          firebase_uid: userFirebaseUid
+        }
+      });
+
+    } catch (error) {
+      await client.query('ROLLBACK');
+      throw error;
+    } finally {
+      client.release();
     }
 
-    // Delete user from database
-    await pool.query(
-      'DELETE FROM users WHERE id = $1',
-      [userId]
-    );
-
-    console.log('✅ User completely deleted by admin:', user.email);
-
-    res.json({
-      success: true,
-      message: 'User account deleted completely from both systems.',
-      deletedUser: {
-        id: user.id,
-        email: user.email,
-        username: user.username,
-        firebase_uid: user.firebase_uid
-      }
-    });
-
   } catch (err) {
-    console.error('❌ Admin user deletion error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error during user deletion' 
-    });
-  }
-});
-
-// MANUALLY VERIFY USER EMAIL
-router.post('/verify-user/:userId', async (req, res) => {
-  try {
-    const userId = parseInt(req.params.userId);
+    console.error('❌ Delete user error:', err.message);
     
-    if (!userId || isNaN(userId)) {
+    if (err.message.includes('foreign key constraint')) {
       return res.status(400).json({ 
         success: false,
-        error: 'Valid user ID is required.' 
+        error: 'Cannot delete user. There might be related records in other tables.' 
       });
     }
-
-    const result = await pool.query(
-      `UPDATE users SET email_verified = true WHERE id = $1 
-       RETURNING id, email, email_verified`,
-      [userId]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ 
-        success: false,
-        error: 'User not found' 
-      });
-    }
-
-    res.json({
-      success: true,
-      message: 'User email manually verified.',
-      user: result.rows[0]
-    });
-
-  } catch (err) {
-    console.error('❌ Manual verification error:', err.message);
+    
     res.status(500).json({ 
       success: false,
-      error: 'Server error during manual verification' 
-    });
-  }
-});
-
-// ==================== MEDICAL RECORDS MANAGEMENT ====================
-
-// GET ALL MEDICAL RECORDS
-router.get('/medical-records', async (req, res) => {
-  try {
-    const result = await pool.query(
-      `SELECT mi.*, u.full_name, u.email, u.username 
-       FROM medical_info mi 
-       JOIN users u ON mi.user_id = u.id 
-       ORDER BY mi.updated_at DESC`
-    );
-
-    res.json({
-      success: true,
-      medicalRecords: result.rows,
-      total: result.rows.length
-    });
-
-  } catch (err) {
-    console.error('❌ Medical records error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      error: 'Server error fetching medical records' 
+      error: 'Server error deleting user: ' + err.message 
     });
   }
 });
@@ -583,7 +603,90 @@ router.post('/unapprove-user', async (req, res) => {
   }
 });
 
-// ==================== ADMIN PROFILE ====================
+// BASE64 PROFILE PHOTO UPLOAD
+router.post('/change-user-profile-base64', async (req, res) => {
+  try {
+    const { user_id, profile_photo, filename } = req.body;
+
+    console.log('📸 Base64 profile photo request received:', {
+      user_id: user_id,
+      hasBase64: !!profile_photo,
+      base64Length: profile_photo ? profile_photo.length : 0,
+      filename: filename
+    });
+
+    if (!user_id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
+    }
+
+    if (!profile_photo) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Profile photo data is required' 
+      });
+    }
+
+    if (!profile_photo.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image format. Please provide a valid base64 image.'
+      });
+    }
+
+    const userResult = await pool.query(
+      'SELECT id, email FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [profile_photo, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, profile_photo, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record with base64 photo');
+    }
+
+    console.log('✅ Base64 profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: profile_photo
+    });
+
+  } catch (err) {
+    console.error('❌ Base64 profile photo error:', err.message);
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
 
 // ADMIN PROFILE
 router.get('/profile', async (req, res) => {
