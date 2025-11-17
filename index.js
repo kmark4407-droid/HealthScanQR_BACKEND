@@ -1,4 +1,4 @@
-// index.js - SIMPLE WORKING AUTH - NO NEW PACKAGES NEEDED
+// index.js - COMPLETE REVISED WITH NON-CONFLICTING ENDPOINTS
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -43,7 +43,7 @@ app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
 // =============================================
-// 🎯 SIMPLE WORKING AUTH ENDPOINTS
+// 🎯 SIMPLE WORKING AUTH ENDPOINTS (NEW NAMES)
 // =============================================
 
 // Test endpoint
@@ -56,10 +56,10 @@ app.post('/api/simple-test', (req, res) => {
   });
 });
 
-// SIMPLE REGISTER - WORKS IMMEDIATELY
-app.post('/api/auth/register', async (req, res) => {
+// SIMPLE REGISTER - NEW ENDPOINT NAME
+app.post('/api/simple-auth/register', async (req, res) => {
   try {
-    console.log('🔐 REGISTER - Body received:', req.body);
+    console.log('🔐 SIMPLE REGISTER - Body received:', req.body);
     
     const { email, password, name } = req.body;
     
@@ -94,10 +94,10 @@ app.post('/api/auth/register', async (req, res) => {
   }
 });
 
-// SIMPLE LOGIN - WORKS IMMEDIATELY
-app.post('/api/auth/login', async (req, res) => {
+// SIMPLE LOGIN - NEW ENDPOINT NAME
+app.post('/api/simple-auth/login', async (req, res) => {
   try {
-    console.log('🔐 LOGIN - Body received:', req.body);
+    console.log('🔐 SIMPLE LOGIN - Body received:', req.body);
     
     const { email, password } = req.body;
     
@@ -133,8 +133,8 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// GET USER PROFILE - WORKS IMMEDIATELY
-app.get('/api/auth/me', async (req, res) => {
+// GET USER PROFILE - NEW ENDPOINT NAME
+app.get('/api/simple-auth/me', async (req, res) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
@@ -174,7 +174,7 @@ app.get('/api/health', (req, res) => {
     message: 'HealthScan QR API Server is running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    auth: '✅ SIMPLE AUTH READY'
+    auth: '✅ SIMPLE AUTH READY (use /api/simple-auth/* endpoints)'
   });
 });
 
@@ -213,9 +213,11 @@ app.all('*', (req, res) => {
       'GET /api/medical/test',
       'GET /api/admin/test',
       'POST /api/simple-test',
-      'POST /api/auth/register',
-      'POST /api/auth/login',
-      'GET /api/auth/me'
+      'POST /api/simple-auth/register',
+      'POST /api/simple-auth/login',
+      'GET /api/simple-auth/me',
+      'POST /api/auth/register (existing)',
+      'POST /api/auth/login (existing)'
     ]
   });
 });
@@ -225,9 +227,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`🎉 SIMPLE AUTH IS WORKING!`);
-  console.log(`📋 Use these endpoints:`);
-  console.log(`   POST /api/auth/register`);
-  console.log(`   POST /api/auth/login`);
-  console.log(`   GET /api/auth/me`);
+  console.log(`🎉 SIMPLE AUTH ENDPOINTS READY!`);
+  console.log(`📋 Use these NEW endpoints:`);
+  console.log(`   POST /api/simple-auth/register`);
+  console.log(`   POST /api/simple-auth/login`);
+  console.log(`   GET /api/simple-auth/me`);
 });
