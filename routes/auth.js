@@ -1,11 +1,13 @@
+// auth.js - UPDATED VERSION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
+import firebaseEmailService from '../services/firebase-email-service.js'; // ✅ ADD THIS LINE
 
 const router = express.Router();
 
-// REGISTER
+// REGISTER - WITH EMAIL VERIFICATION
 router.post('/register', async (req, res) => {
   try {
     const { full_name, email, username, password } = req.body;
@@ -24,8 +26,14 @@ router.post('/register', async (req, res) => {
       [full_name, email, username, hashedPassword]
     );
 
+    // ✅ ADD THESE 2 LINES - Send verification email (non-blocking)
+    console.log('📧 Sending verification email to:', email);
+    firebaseEmailService.sendVerificationEmail(email).catch(err => 
+      console.log('Email service note:', err.message)
+    );
+
     res.json({
-      message: '✅ User registered successfully',
+      message: '✅ User registered successfully! Please check your email for verification.',
       user: result.rows[0]
     });
   } catch (err) {
@@ -34,7 +42,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// LOGIN (email + password)
+// LOGIN (email + password) - NO CHANGES NEEDED
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
