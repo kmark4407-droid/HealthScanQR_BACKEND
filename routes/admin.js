@@ -1,8 +1,9 @@
-// admin.js - FIXED VERSION WITH ROBUST ACTIVITY LOGS
+// admin.js - COMPLETE REVISED VERSION WITH FIREBASE INTEGRATION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
+import firebaseEmailService from '../services/firebase-email-service.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -50,454 +51,64 @@ const upload = multer({
   }
 });
 
-// ==================== ACTIVITY LOGS ENDPOINTS - FIXED ====================
+// ==================== ADMIN AUTHENTICATION ====================
 
-// GET ACTIVITY LOGS - FIXED: More robust error handling
-router.get('/activity-logs', async (req, res) => {
+// ADMIN LOGIN
+router.post('/admin-login', async (req, res) => {
   try {
-    const { admin_id } = req.query;
-    
-    console.log('📋 Fetching activity logs...', { admin_id });
+    const { username, password } = req.body;
 
-    // Check if activity_logs table exists
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'activity_logs'
-      )
-    `);
-
-    if (!tableCheck.rows[0].exists) {
-      console.log('⚠️ activity_logs table does not exist, creating it...');
-      
-      // Create activity_logs table
-      await pool.query(`
-        CREATE TABLE activity_logs (
-          id SERIAL PRIMARY KEY,
-          action VARCHAR(50) NOT NULL,
-          description TEXT,
-          admin_id INTEGER,
-          admin_name VARCHAR(255),
-          timestamp TIMESTAMP DEFAULT NOW(),
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      
-      console.log('✅ Created activity_logs table');
-      
-      // Insert initial log entry
-      await pool.query(`
-        INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
-        VALUES ('SYSTEM', 'Activity logs system initialized', $1, 'System', NOW())
-      `, [admin_id || 1]);
-      
-      return res.json({
-        success: true,
-        logs: [
-          {
-            id: 1,
-            action: 'SYSTEM',
-            description: 'Activity logs system initialized',
-            admin_id: admin_id || 1,
-            admin_name: 'System',
-            timestamp: new Date().toISOString(),
-            created_at: new Date().toISOString()
-          }
-        ],
-        message: 'Activity logs table created successfully'
-      });
-    }
-
-    // Build query - FIXED: Simplified without admin_id filter first
-    let query = `
-      SELECT * FROM activity_logs 
-      ORDER BY timestamp DESC 
-      LIMIT 100
-    `;
-    let values = [];
-
-    console.log('📝 Executing logs query:', query);
-    const result = await pool.query(query, values);
-    
-    console.log(`✅ Found ${result.rows.length} activity logs`);
-
-    // Format the response properly
-    const formattedLogs = result.rows.map(log => ({
-      id: log.id,
-      action: log.action,
-      description: log.description,
-      admin_id: log.admin_id,
-      admin_name: log.admin_name,
-      timestamp: log.timestamp,
-      created_at: log.created_at
-    }));
-
-    res.json({
-      success: true,
-      logs: formattedLogs
-    });
-
-  } catch (err) {
-    console.error('❌ Get activity logs error:', err.message);
-    
-    // Return empty array with success for better UX
-    res.json({
-      success: true,
-      logs: [],
-      message: 'No logs available: ' + err.message
-    });
-  }
-});
-
-// LOG ACTIVITY - FIXED: Better error handling
-router.post('/log-activity', async (req, res) => {
-  try {
-    const { action, description, admin_id, admin_name, timestamp } = req.body;
-
-    if (!action) {
+    if (!username || !password) {
       return res.status(400).json({ 
         success: false,
-        message: 'Action is required' 
+        error: 'Username and password are required.' 
       });
     }
 
-    console.log('📝 Logging activity:', { action, description, admin_id, admin_name });
+    // Hardcoded admin credentials (replace with database check in production)
+    const adminUsername = process.env.ADMIN_USERNAME || 'admin';
+    const adminPassword = process.env.ADMIN_PASSWORD || 'admin123';
 
-    // Ensure activity_logs table exists
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'activity_logs'
-      )
-    `);
-
-    if (!tableCheck.rows[0].exists) {
-      // Create activity_logs table
-      await pool.query(`
-        CREATE TABLE activity_logs (
-          id SERIAL PRIMARY KEY,
-          action VARCHAR(50) NOT NULL,
-          description TEXT,
-          admin_id INTEGER,
-          admin_name VARCHAR(255),
-          timestamp TIMESTAMP DEFAULT NOW(),
-          created_at TIMESTAMP DEFAULT NOW()
-        )
-      `);
-      console.log('✅ Created activity_logs table for logging');
+    if (username !== adminUsername || password !== adminPassword) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'Invalid admin credentials' 
+      });
     }
 
-    const result = await pool.query(
-      `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
-       VALUES ($1, $2, $3, $4, $5)
-       RETURNING *`,
-      [action, description, admin_id, admin_name, timestamp || new Date()]
+    // Generate admin token
+    const token = jwt.sign(
+      { 
+        username: username,
+        role: 'admin',
+        isAdmin: true 
+      },
+      process.env.JWT_SECRET || 'secret_key',
+      { expiresIn: '8h' }
     );
 
-    console.log('✅ Activity logged successfully:', result.rows[0].id);
-
     res.json({
       success: true,
-      log: result.rows[0],
-      message: 'Activity logged successfully'
+      message: 'Admin login successful',
+      token: token,
+      admin: {
+        username: username,
+        role: 'admin'
+      }
     });
 
   } catch (err) {
-    console.error('❌ Log activity error:', err.message);
-    
-    // Still return success to avoid breaking the frontend
-    res.json({
-      success: true,
-      message: 'Activity recorded (log may not be saved)'
-    });
-  }
-});
-
-// CLEAR LOGS - FIXED: Better response
-router.delete('/clear-logs', async (req, res) => {
-  try {
-    console.log('🗑️ Clearing all activity logs...');
-
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'activity_logs'
-      )
-    `);
-
-    if (!tableCheck.rows[0].exists) {
-      return res.status(404).json({ 
-        success: false,
-        message: 'Activity logs table does not exist' 
-      });
-    }
-
-    const result = await pool.query('DELETE FROM activity_logs');
-    
-    console.log('✅ All activity logs cleared. Rows affected:', result.rowCount);
-
-    res.json({
-      success: true,
-      message: `All activity logs cleared successfully (${result.rowCount} records removed)`,
-      records_removed: result.rowCount
-    });
-
-  } catch (err) {
-    console.error('❌ Clear logs error:', err.message);
+    console.error('❌ Admin login error:', err.message);
     res.status(500).json({ 
       success: false,
-      message: 'Error clearing activity logs: ' + err.message 
+      error: 'Server error during admin login' 
     });
   }
 });
 
-// ALTERNATIVE LOGS ENDPOINT (fallback) - FIXED
-router.get('/logs', async (req, res) => {
-  try {
-    console.log('📋 Fetching logs via alternative endpoint...');
+// ==================== USER MANAGEMENT ====================
 
-    const tableCheck = await pool.query(`
-      SELECT EXISTS (
-        SELECT FROM information_schema.tables 
-        WHERE table_schema = 'public' 
-        AND table_name = 'activity_logs'
-      )
-    `);
-
-    if (!tableCheck.rows[0].exists) {
-      return res.json({
-        success: true,
-        logs: [],
-        message: 'No activity logs table found'
-      });
-    }
-
-    const result = await pool.query(`
-      SELECT * FROM activity_logs 
-      ORDER BY timestamp DESC 
-      LIMIT 50
-    `);
-
-    console.log(`✅ Alternative endpoint found ${result.rows.length} logs`);
-
-    res.json({
-      success: true,
-      logs: result.rows
-    });
-
-  } catch (err) {
-    console.error('❌ Alternative logs endpoint error:', err.message);
-    res.json({
-      success: true,
-      logs: []
-    });
-  }
-});
-
-// ==================== BASE64 PROFILE PHOTO UPLOAD ====================
-router.post('/change-user-profile-base64', async (req, res) => {
-  try {
-    const { user_id, profile_photo, filename } = req.body;
-
-    console.log('📸 Base64 profile photo request received:', {
-      user_id: user_id,
-      hasBase64: !!profile_photo,
-      base64Length: profile_photo ? profile_photo.length : 0,
-      filename: filename
-    });
-
-    if (!user_id) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required' 
-      });
-    }
-
-    if (!profile_photo) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Profile photo data is required' 
-      });
-    }
-
-    // Validate base64 image
-    if (!profile_photo.startsWith('data:image/')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid image format. Please provide a valid base64 image.'
-      });
-    }
-
-    // Check if user exists
-    const userResult = await pool.query(
-      'SELECT id, email FROM users WHERE id = $1',
-      [user_id]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    // Store base64 directly in database
-    const result = await pool.query(
-      `UPDATE medical_info 
-       SET photo_url = $1, updated_at = NOW()
-       WHERE user_id = $2
-       RETURNING *`,
-      [profile_photo, user_id]
-    );
-
-    if (result.rows.length === 0) {
-      console.log('⚠️ No existing medical_info record, creating one...');
-      
-      const userEmail = userResult.rows[0]?.email || 'Unknown User';
-      
-      const insertResult = await pool.query(
-        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
-         VALUES ($1, $2, $3, NOW()) RETURNING *`,
-        [user_id, profile_photo, userEmail]
-      );
-      
-      console.log('✅ Created new medical_info record with base64 photo');
-    }
-
-    console.log('✅ Base64 profile photo updated successfully for user:', user_id);
-
-    res.json({
-      success: true,
-      message: 'Profile photo updated successfully',
-      new_photo_url: profile_photo
-    });
-
-  } catch (err) {
-    console.error('❌ Base64 profile photo error:', err.message);
-    
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error updating profile photo: ' + err.message 
-    });
-  }
-});
-
-// ==================== PROFILE PHOTO UPLOAD ENDPOINT ====================
-router.post('/change-user-profile', upload.single('profile_photo'), async (req, res) => {
-  try {
-    const { user_id } = req.body;
-    const file = req.file;
-
-    console.log('📸 Change profile photo request received:', {
-      user_id: user_id,
-      hasFile: !!file,
-      fileName: file?.filename
-    });
-
-    if (!user_id) {
-      if (file) {
-        fs.unlinkSync(file.path);
-      }
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required' 
-      });
-    }
-
-    if (!file) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Profile photo file is required' 
-      });
-    }
-
-    // Generate photo URL
-    const photoUrl = `/uploads/${file.filename}`;
-    
-    console.log('💾 Updating database with photo URL:', photoUrl);
-    
-    // Update medical_info with new photo URL
-    const result = await pool.query(
-      `UPDATE medical_info 
-       SET photo_url = $1, updated_at = NOW()
-       WHERE user_id = $2
-       RETURNING *`,
-      [photoUrl, user_id]
-    );
-
-    if (result.rows.length === 0) {
-      console.log('⚠️ No existing medical_info record, creating one...');
-      
-      const userResult = await pool.query(
-        'SELECT email FROM users WHERE id = $1',
-        [user_id]
-      );
-      
-      if (userResult.rows.length === 0) {
-        fs.unlinkSync(file.path);
-        return res.status(404).json({
-          success: false,
-          message: 'User not found'
-        });
-      }
-      
-      const userEmail = userResult.rows[0]?.email || 'Unknown User';
-      
-      const insertResult = await pool.query(
-        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
-         VALUES ($1, $2, $3, NOW()) RETURNING *`,
-        [user_id, photoUrl, userEmail]
-      );
-      
-      console.log('✅ Created new medical_info record');
-    }
-
-    console.log('✅ Profile photo updated successfully for user:', user_id);
-
-    res.json({
-      success: true,
-      message: 'Profile photo updated successfully',
-      new_photo_url: photoUrl
-    });
-
-  } catch (err) {
-    console.error('❌ Change user profile error:', err.message);
-    
-    if (req.file) {
-      try {
-        fs.unlinkSync(req.file.path);
-        console.log('🗑️ Cleaned up uploaded file due to error');
-      } catch (cleanupError) {
-        console.error('Error cleaning up file:', cleanupError.message);
-      }
-    }
-    
-    if (err instanceof multer.MulterError) {
-      if (err.code === 'LIMIT_FILE_SIZE') {
-        return res.status(400).json({
-          success: false,
-          message: 'File size too large. Please upload images smaller than 5MB.'
-        });
-      }
-      return res.status(400).json({
-        success: false,
-        message: `File upload error: ${err.message}`
-      });
-    }
-    
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error updating profile photo: ' + err.message 
-    });
-  }
-});
-
-// ==================== USER MANAGEMENT ENDPOINTS ====================
-
-// GET ALL USERS - UPDATED FOR BASE64
+// GET ALL USERS
 router.get('/users', async (req, res) => {
   try {
     console.log('🔍 Fetching users from database...');
@@ -506,6 +117,9 @@ router.get('/users', async (req, res) => {
       SELECT 
         u.id as user_id,
         u.email,
+        u.username,
+        u.email_verified,
+        u.firebase_uid,
         u.created_at,
         mi.photo_url as profile_photo,
         COALESCE(mi.full_name, 'Not provided') as full_name,
@@ -547,6 +161,9 @@ router.get('/users', async (req, res) => {
       return {
         user_id: user.user_id,
         email: user.email,
+        username: user.username,
+        email_verified: user.email_verified,
+        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: profile_photo || '',
         full_name: user.full_name || 'Not provided',
@@ -574,11 +191,14 @@ router.get('/users', async (req, res) => {
     
     // Fallback to simple user query
     try {
-      const simpleResult = await pool.query('SELECT id as user_id, email, created_at FROM users ORDER BY created_at DESC');
+      const simpleResult = await pool.query('SELECT id as user_id, email, username, email_verified, firebase_uid, created_at FROM users ORDER BY created_at DESC');
       
       const simpleUsers = simpleResult.rows.map(user => ({
         user_id: user.user_id,
         email: user.email,
+        username: user.username,
+        email_verified: user.email_verified,
+        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: '',
         full_name: 'Not available',
@@ -599,63 +219,252 @@ router.get('/users', async (req, res) => {
       console.error('❌ Fallback also failed:', fallbackError.message);
       res.status(500).json({ 
         success: false,
-        message: 'Server error fetching users: ' + err.message
+        error: 'Server error fetching users: ' + err.message
       });
     }
   }
 });
 
-// ADMIN LOGIN
-router.post('/admin-login', async (req, res) => {
+// GET USER STATISTICS
+router.get('/stats', async (req, res) => {
   try {
-    const { email, password } = req.body;
+    // Total users
+    const totalUsersResult = await pool.query('SELECT COUNT(*) FROM users');
+    const totalUsers = parseInt(totalUsersResult.rows[0].count);
 
-    if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
-    }
+    // Verified users
+    const verifiedUsersResult = await pool.query('SELECT COUNT(*) FROM users WHERE email_verified = true');
+    const verifiedUsers = parseInt(verifiedUsersResult.rows[0].count);
 
-    // Find admin by email
-    const result = await pool.query(
-      `SELECT * FROM admins WHERE email = $1`,
-      [email]
+    // Users with medical info
+    const medicalUsersResult = await pool.query('SELECT COUNT(DISTINCT user_id) FROM medical_info');
+    const medicalUsers = parseInt(medicalUsersResult.rows[0].count);
+
+    // Recent registrations (last 7 days)
+    const recentUsersResult = await pool.query(
+      'SELECT COUNT(*) FROM users WHERE created_at >= NOW() - INTERVAL \'7 days\''
     );
+    const recentUsers = parseInt(recentUsersResult.rows[0].count);
 
-    if (result.rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid admin credentials' });
-    }
-
-    const admin = result.rows[0];
-    const validPassword = await bcrypt.compare(password, admin.password);
-
-    if (!validPassword) {
-      return res.status(401).json({ message: 'Invalid admin credentials' });
-    }
-
-    // Generate JWT token
-    const token = jwt.sign(
-      { 
-        adminId: admin.id, 
-        email: admin.email, 
-        role: admin.role 
-      },
-      process.env.JWT_SECRET || 'secret_key',
-      { expiresIn: '24h' }
-    );
+    // Users with Firebase UID
+    const firebaseUsersResult = await pool.query('SELECT COUNT(*) FROM users WHERE firebase_uid IS NOT NULL');
+    const firebaseUsers = parseInt(firebaseUsersResult.rows[0].count);
 
     res.json({
-      message: '✅ Admin login successful',
-      token,
-      admin: {
-        id: admin.id,
-        full_name: admin.full_name,
-        email: admin.email,
-        role: admin.role
+      success: true,
+      stats: {
+        totalUsers,
+        verifiedUsers,
+        unverifiedUsers: totalUsers - verifiedUsers,
+        medicalUsers,
+        firebaseUsers,
+        recentRegistrations: recentUsers,
+        verificationRate: totalUsers > 0 ? ((verifiedUsers / totalUsers) * 100).toFixed(1) : 0
       }
     });
 
   } catch (err) {
-    console.error('❌ Admin login error:', err.message);
-    res.status(500).json({ message: 'Server error during admin login' });
+    console.error('❌ Stats error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error fetching statistics' 
+    });
+  }
+});
+
+// GET USER DETAILS
+router.get('/user/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Valid user ID is required.' 
+      });
+    }
+
+    const userResult = await pool.query(
+      `SELECT id, full_name, email, username, email_verified, firebase_uid, created_at 
+       FROM users WHERE id = $1`,
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Get user's medical info
+    const medicalResult = await pool.query(
+      'SELECT * FROM medical_info WHERE user_id = $1',
+      [userId]
+    );
+
+    res.json({
+      success: true,
+      user: user,
+      medicalInfo: medicalResult.rows[0] || null,
+      hasMedicalInfo: medicalResult.rows.length > 0
+    });
+
+  } catch (err) {
+    console.error('❌ User details error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error fetching user details' 
+    });
+  }
+});
+
+// ✅ ADMIN: DELETE USER COMPLETELY (from both Neon DB and Firebase)
+router.delete('/user/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Valid user ID is required.' 
+      });
+    }
+
+    // Get user data
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Delete from Firebase Auth
+    if (user.firebase_uid) {
+      console.log('🗑️ Admin: Deleting Firebase user:', user.firebase_uid);
+      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
+      
+      if (firebaseResult.success) {
+        console.log('✅ Firebase user deletion completed');
+      } else {
+        console.log('⚠️ Firebase user deletion may need manual cleanup');
+      }
+    } else {
+      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
+    }
+
+    // Delete user's medical records
+    try {
+      await pool.query(
+        'DELETE FROM medical_info WHERE user_id = $1',
+        [userId]
+      );
+      console.log('✅ Medical records deleted');
+    } catch (medicalError) {
+      console.log('⚠️ No medical records to delete:', medicalError.message);
+    }
+
+    // Delete user from database
+    await pool.query(
+      'DELETE FROM users WHERE id = $1',
+      [userId]
+    );
+
+    console.log('✅ User completely deleted by admin:', user.email);
+
+    res.json({
+      success: true,
+      message: 'User account deleted completely from both systems.',
+      deletedUser: {
+        id: user.id,
+        email: user.email,
+        username: user.username,
+        firebase_uid: user.firebase_uid
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Admin user deletion error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during user deletion' 
+    });
+  }
+});
+
+// MANUALLY VERIFY USER EMAIL
+router.post('/verify-user/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Valid user ID is required.' 
+      });
+    }
+
+    const result = await pool.query(
+      `UPDATE users SET email_verified = true WHERE id = $1 
+       RETURNING id, email, email_verified`,
+      [userId]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      message: 'User email manually verified.',
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Manual verification error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error during manual verification' 
+    });
+  }
+});
+
+// ==================== MEDICAL RECORDS MANAGEMENT ====================
+
+// GET ALL MEDICAL RECORDS
+router.get('/medical-records', async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT mi.*, u.full_name, u.email, u.username 
+       FROM medical_info mi 
+       JOIN users u ON mi.user_id = u.id 
+       ORDER BY mi.updated_at DESC`
+    );
+
+    res.json({
+      success: true,
+      medicalRecords: result.rows,
+      total: result.rows.length
+    });
+
+  } catch (err) {
+    console.error('❌ Medical records error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error fetching medical records' 
+    });
   }
 });
 
@@ -665,7 +474,10 @@ router.post('/approve-user', async (req, res) => {
     const { user_id, admin_id } = req.body;
 
     if (!user_id || !admin_id) {
-      return res.status(400).json({ message: 'User ID and Admin ID are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID and Admin ID are required' 
+      });
     }
 
     // Get admin name for logging
@@ -686,7 +498,10 @@ router.post('/approve-user', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User medical information not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'User medical information not found' 
+      });
     }
 
     res.json({
@@ -696,7 +511,10 @@ router.post('/approve-user', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Approve user error:', err.message);
-    res.status(500).json({ message: 'Server error approving user' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error approving user' 
+    });
   }
 });
 
@@ -706,7 +524,10 @@ router.post('/unapprove-user', async (req, res) => {
     const { user_id, admin_id } = req.body;
 
     if (!user_id || !admin_id) {
-      return res.status(400).json({ message: 'User ID and Admin ID are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID and Admin ID are required' 
+      });
     }
 
     // Update medical_info to remove approval
@@ -719,7 +540,10 @@ router.post('/unapprove-user', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User medical information not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'User medical information not found' 
+      });
     }
 
     res.json({
@@ -729,72 +553,10 @@ router.post('/unapprove-user', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Unapprove user error:', err.message);
-    res.status(500).json({ message: 'Server error unapproving user' });
-  }
-});
-
-// DELETE USER
-router.delete('/delete-user/:user_id', async (req, res) => {
-  try {
-    const { user_id } = req.params;
-    const { admin_id } = req.body;
-
-    if (!user_id || !admin_id) {
-      return res.status(400).json({ message: 'User ID and Admin ID are required' });
-    }
-
-    // Get user info for logging before deletion
-    const userResult = await pool.query(
-      `SELECT u.email, mi.full_name 
-       FROM users u 
-       LEFT JOIN medical_info mi ON u.id = mi.user_id 
-       WHERE u.id = $1`,
-      [user_id]
-    );
-
-    if (userResult.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    const userEmail = userResult.rows[0].email;
-    const userName = userResult.rows[0].full_name || userEmail;
-
-    // Start a transaction to ensure all deletions happen
-    const client = await pool.connect();
-    
-    try {
-      await client.query('BEGIN');
-
-      // Delete from medical_info first (due to foreign key constraint)
-      await client.query('DELETE FROM medical_info WHERE user_id = $1', [user_id]);
-      
-      // Delete from users
-      await client.query('DELETE FROM users WHERE id = $1', [user_id]);
-
-      await client.query('COMMIT');
-
-      res.json({
-        success: true,
-        message: 'User deleted successfully'
-      });
-
-    } catch (error) {
-      await client.query('ROLLBACK');
-      throw error;
-    } finally {
-      client.release();
-    }
-
-  } catch (err) {
-    console.error('❌ Delete user error:', err.message);
-    
-    if (err.message.includes('foreign key constraint')) {
-      return res.status(400).json({ 
-        message: 'Cannot delete user. There might be related records in other tables.' 
-      });
-    }
-    
-    res.status(500).json({ message: 'Server error deleting user' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error unapproving user' 
+    });
   }
 });
 
@@ -817,7 +579,8 @@ router.put('/update-medical/:user_id', async (req, res) => {
     // Validate required fields
     if (!full_name || !dob || !blood_type || !address || !emergency_contact) {
       return res.status(400).json({ 
-        message: 'All required fields must be provided'
+        success: false,
+        error: 'All required fields must be provided'
       });
     }
 
@@ -829,7 +592,8 @@ router.put('/update-medical/:user_id', async (req, res) => {
 
     if (existingRecord.rows.length === 0) {
       return res.status(404).json({ 
-        message: 'Medical record not found for this user'
+        success: false,
+        error: 'Medical record not found for this user'
       });
     }
 
@@ -865,10 +629,14 @@ router.put('/update-medical/:user_id', async (req, res) => {
     const result = await pool.query(updateQuery, updateValues);
 
     if (result.rows.length === 0) {
-      return res.status(500).json({ message: 'Failed to update medical information' });
+      return res.status(500).json({ 
+        success: false,
+        error: 'Failed to update medical information' 
+      });
     }
 
     res.json({
+      success: true,
       message: 'Medical information updated successfully',
       medical_info: result.rows[0],
       user_id: user_id,
@@ -880,16 +648,253 @@ router.put('/update-medical/:user_id', async (req, res) => {
     
     if (err.message.includes('foreign key constraint')) {
       return res.status(404).json({ 
-        message: 'User not found in the system' 
+        success: false,
+        error: 'User not found in the system' 
       });
     }
     
     res.status(500).json({ 
-      message: 'Server error during medical information update',
-      error: err.message 
+      success: false,
+      error: 'Server error during medical information update'
     });
   }
 });
+
+// ==================== PROFILE PHOTO MANAGEMENT ====================
+
+// BASE64 PROFILE PHOTO UPLOAD
+router.post('/change-user-profile-base64', async (req, res) => {
+  try {
+    const { user_id, profile_photo, filename } = req.body;
+
+    console.log('📸 Base64 profile photo request received:', {
+      user_id: user_id,
+      hasBase64: !!profile_photo,
+      base64Length: profile_photo ? profile_photo.length : 0,
+      filename: filename
+    });
+
+    if (!user_id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
+    }
+
+    if (!profile_photo) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Profile photo data is required' 
+      });
+    }
+
+    // Validate base64 image
+    if (!profile_photo.startsWith('data:image/')) {
+      return res.status(400).json({
+        success: false,
+        error: 'Invalid image format. Please provide a valid base64 image.'
+      });
+    }
+
+    // Check if user exists
+    const userResult = await pool.query(
+      'SELECT id, email FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        error: 'User not found'
+      });
+    }
+
+    // Store base64 directly in database
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [profile_photo, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, profile_photo, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record with base64 photo');
+    }
+
+    console.log('✅ Base64 profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: profile_photo
+    });
+
+  } catch (err) {
+    console.error('❌ Base64 profile photo error:', err.message);
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
+// FILE UPLOAD PROFILE PHOTO
+router.post('/change-user-profile', upload.single('profile_photo'), async (req, res) => {
+  try {
+    const { user_id } = req.body;
+    const file = req.file;
+
+    console.log('📸 Change profile photo request received:', {
+      user_id: user_id,
+      hasFile: !!file,
+      fileName: file?.filename
+    });
+
+    if (!user_id) {
+      if (file) {
+        fs.unlinkSync(file.path);
+      }
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
+    }
+
+    if (!file) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Profile photo file is required' 
+      });
+    }
+
+    // Generate photo URL
+    const photoUrl = `/uploads/${file.filename}`;
+    
+    console.log('💾 Updating database with photo URL:', photoUrl);
+    
+    // Update medical_info with new photo URL
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [photoUrl, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userResult = await pool.query(
+        'SELECT email FROM users WHERE id = $1',
+        [user_id]
+      );
+      
+      if (userResult.rows.length === 0) {
+        fs.unlinkSync(file.path);
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, photoUrl, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record');
+    }
+
+    console.log('✅ Profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: photoUrl
+    });
+
+  } catch (err) {
+    console.error('❌ Change user profile error:', err.message);
+    
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('🗑️ Cleaned up uploaded file due to error');
+      } catch (cleanupError) {
+        console.error('Error cleaning up file:', cleanupError.message);
+      }
+    }
+    
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          error: 'File size too large. Please upload images smaller than 5MB.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: `File upload error: ${err.message}`
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
+// ==================== ADMIN PROFILE ====================
+
+// ADMIN PROFILE
+router.get('/profile', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ 
+        success: false,
+        error: 'No token provided' 
+      });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
+    
+    res.json({
+      success: true,
+      admin: {
+        username: decoded.username,
+        role: decoded.role,
+        isAdmin: decoded.isAdmin
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Admin profile error:', err.message);
+    res.status(401).json({ 
+      success: false,
+      error: 'Invalid token' 
+    });
+  }
+});
+
+// ==================== UTILITY ENDPOINTS ====================
 
 // FIND USER BY MEDICAL INFO
 router.post('/find-user-by-medical', async (req, res) => {
@@ -897,7 +902,10 @@ router.post('/find-user-by-medical', async (req, res) => {
     const { full_name, dob } = req.body;
 
     if (!full_name || !dob) {
-      return res.status(400).json({ message: 'Full name and date of birth are required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'Full name and date of birth are required' 
+      });
     }
 
     const result = await pool.query(
@@ -906,7 +914,10 @@ router.post('/find-user-by-medical', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'Medical record not found' });
+      return res.status(404).json({ 
+        success: false,
+        error: 'Medical record not found' 
+      });
     }
 
     res.json({
@@ -916,7 +927,10 @@ router.post('/find-user-by-medical', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Find user by medical info error:', err.message);
-    res.status(500).json({ message: 'Server error finding user' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error finding user' 
+    });
   }
 });
 
@@ -926,7 +940,10 @@ router.post('/refresh-user-data', async (req, res) => {
     const { user_id } = req.body;
 
     if (!user_id) {
-      return res.status(400).json({ message: 'User ID is required' });
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
     }
 
     console.log(`🔄 Refreshing user data for: ${user_id}`);
@@ -938,8 +955,20 @@ router.post('/refresh-user-data', async (req, res) => {
 
   } catch (err) {
     console.error('❌ Refresh user data error:', err.message);
-    res.status(500).json({ message: 'Server error refreshing user data' });
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error refreshing user data' 
+    });
   }
+});
+
+// TEST ENDPOINT
+router.get('/test', (req, res) => {
+  res.json({ 
+    success: true, 
+    message: 'Admin endpoint is working! 🎉',
+    timestamp: new Date().toISOString()
+  });
 });
 
 export default router;
