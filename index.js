@@ -1,4 +1,4 @@
-// index.js - COMPLETE REVISED VERSION WITH WORKING NEON AUTH
+// index.js - COMPLETE REVISED VERSION WITH FIXED NEON AUTH HEADERS
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -43,7 +43,7 @@ app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
 // =============================================
-// 🎯 WORKING NEON AUTH IMPLEMENTATION
+// 🎯 FIXED NEON AUTH WITH CORRECT HEADERS
 // =============================================
 
 // Test endpoint
@@ -77,7 +77,9 @@ app.post('/api/neon-auth/register', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
-        'X-Project-Id': process.env.STACK_PROJECT_ID
+        'X-Project-Id': process.env.STACK_PROJECT_ID,
+        'X-Stack-Access-Type': 'server',
+        'X-Stack-Publishable-Client-Key': process.env.STACK_PUBLISHABLE_CLIENT_KEY
       },
       body: JSON.stringify({
         project_id: process.env.STACK_PROJECT_ID,
@@ -156,7 +158,9 @@ app.post('/api/neon-auth/login', async (req, res) => {
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
-        'X-Project-Id': process.env.STACK_PROJECT_ID
+        'X-Project-Id': process.env.STACK_PROJECT_ID,
+        'X-Stack-Access-Type': 'server',
+        'X-Stack-Publishable-Client-Key': process.env.STACK_PUBLISHABLE_CLIENT_KEY
       },
       body: JSON.stringify({
         project_id: process.env.STACK_PROJECT_ID,
@@ -212,7 +216,7 @@ app.post('/api/neon-auth/login', async (req, res) => {
   }
 });
 
-// Get user profile with JWKS verification
+// Get user profile with correct headers
 app.get('/api/neon-auth/me', async (req, res) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -226,13 +230,14 @@ app.get('/api/neon-auth/me', async (req, res) => {
     
     console.log('🔐 Verifying token...');
     
-    // Verify token using Neon Auth API
     const authResponse = await fetch('https://api.stack-auth.com/api/v1/auth/verify', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
-        'X-Project-Id': process.env.STACK_PROJECT_ID
+        'X-Project-Id': process.env.STACK_PROJECT_ID,
+        'X-Stack-Access-Type': 'server',
+        'X-Stack-Publishable-Client-Key': process.env.STACK_PUBLISHABLE_CLIENT_KEY
       },
       body: JSON.stringify({
         access_token: token
@@ -284,16 +289,24 @@ app.get('/api/neon-auth/me', async (req, res) => {
 app.get('/api/neon-auth/status', (req, res) => {
   const hasProjectId = !!process.env.STACK_PROJECT_ID;
   const hasSecretKey = !!process.env.STACK_SECRET_SERVER_KEY;
+  const hasClientKey = !!process.env.STACK_PUBLISHABLE_CLIENT_KEY;
   
   res.json({
     success: true,
-    message: 'Neon Auth Status',
+    message: 'Neon Auth Status with Fixed Headers',
     environment: {
       projectId: hasProjectId ? '✅ Set' : '❌ Missing',
       secretKey: hasSecretKey ? '✅ Set' : '❌ Missing',
-      projectIdValue: hasProjectId ? process.env.STACK_PROJECT_ID.substring(0, 8) + '...' : 'None'
+      clientKey: hasClientKey ? '✅ Set' : '❌ Missing'
     },
-    jwksUrl: 'https://api.stack-auth.com/api/v1/projects/565aeec4-a59c-4383-a9a1-0ae58a08959b/.well-known/jwks.json',
+    headers: {
+      required: [
+        'Authorization: Bearer <secret_key>',
+        'X-Project-Id: <project_id>',
+        'X-Stack-Access-Type: server',
+        'X-Stack-Publishable-Client-Key: <client_key>'
+      ]
+    },
     endpoints: {
       test: 'POST /api/simple-test',
       register: 'POST /api/neon-auth/register',
@@ -367,7 +380,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔑 Neon Auth Project ID: ${process.env.STACK_PROJECT_ID ? '✅ Loaded' : '❌ Missing'}`);
   console.log(`🔐 Neon Auth Secret Key: ${process.env.STACK_SECRET_SERVER_KEY ? '✅ Loaded' : '❌ Missing'}`);
-  console.log(`🔗 JWKS URL: https://api.stack-auth.com/api/v1/projects/565aeec4-a59c-4383-a9a1-0ae58a08959b/.well-known/jwks.json`);
+  console.log(`🔗 Neon Auth Client Key: ${process.env.STACK_PUBLISHABLE_CLIENT_KEY ? '✅ Loaded' : '❌ Missing'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`🎉 Neon Auth is READY!`);
+  console.log(`🎉 Neon Auth with fixed headers deployed!`);
 });
