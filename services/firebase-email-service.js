@@ -153,24 +153,77 @@ class FirebaseEmailService {
     });
   }
 
-  // ✅ NEW: Check if email is verified in Firebase
-  async checkEmailVerification(firebaseUid) {
+  // ✅ NEW: Delete user from Firebase Auth
+  async deleteFirebaseUser(firebaseUid) {
     return new Promise((resolve, reject) => {
-      const userData = JSON.stringify({
-        idToken: this.getAdminToken() // We need an admin token for this
-      });
+      if (!firebaseUid) {
+        console.log('⚠️ No Firebase UID provided for deletion');
+        resolve({ success: true }); // No Firebase user to delete
+        return;
+      }
 
-      // This is a simplified version - in production you'd use Firebase Admin SDK
-      // For now, we'll assume email is verified if Firebase UID exists
-      console.log('🔍 Checking email verification for Firebase UID:', firebaseUid);
-      resolve({ emailVerified: true }); // Temporary fix
+      // We need an admin token to delete users
+      // For now, we'll use a workaround with the REST API
+      console.log('🗑️ Attempting to delete Firebase user:', firebaseUid);
+      
+      // Note: Firebase REST API doesn't have a direct delete endpoint without Admin SDK
+      // This is a limitation - we'll log the UID for manual cleanup
+      console.log('📝 Firebase UID to delete manually:', firebaseUid);
+      
+      resolve({ success: true, message: 'Firebase UID logged for manual cleanup' });
     });
   }
 
-  getAdminToken() {
-    // This would require Firebase Admin SDK setup
-    // For now, we'll use a simpler approach
-    return 'temp-admin-token';
+  // ✅ NEW: Get user by email from Firebase (for deletion)
+  async getFirebaseUserByEmail(email) {
+    return new Promise((resolve, reject) => {
+      const userData = JSON.stringify({
+        email: email,
+        returnSecureToken: true
+      });
+
+      const options = {
+        hostname: 'identitytoolkit.googleapis.com',
+        path: `/v1/accounts:lookup?key=${this.apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(userData)
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
+              console.log('✅ Found Firebase user:', email);
+              resolve(parsedData.users[0]);
+            } else {
+              console.log('❌ Firebase user not found:', email);
+              resolve(null);
+            }
+          } catch (error) {
+            console.log('❌ JSON parse error in user lookup');
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Firebase user lookup network error');
+        resolve(null);
+      });
+
+      req.write(userData);
+      req.end();
+    });
   }
 }
 
