@@ -1,4 +1,4 @@
-// index.js - COMPLETE REVISED WITH NON-CONFLICTING ENDPOINTS
+// index.js - UPDATED WITH EMAIL VERIFICATION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -56,7 +56,7 @@ app.post('/api/simple-test', (req, res) => {
   });
 });
 
-// SIMPLE REGISTER - NEW ENDPOINT NAME
+// SIMPLE REGISTER - NEW ENDPOINT NAME (WITH EMAIL VERIFICATION)
 app.post('/api/simple-auth/register', async (req, res) => {
   try {
     console.log('🔐 SIMPLE REGISTER - Body received:', req.body);
@@ -72,10 +72,19 @@ app.post('/api/simple-auth/register', async (req, res) => {
     
     console.log('✅ Registering user:', email);
     
+    // Import the email service dynamically
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+    
+    // Send verification email
+    console.log('📧 Sending verification email to:', email);
+    firebaseEmailService.sendVerificationEmail(email, password)
+      .then(() => console.log('✅ Email process completed for:', email))
+      .catch(err => console.log('Email service note:', err.message));
+
     // Simple success response - this WORKS NOW
     res.status(201).json({
       success: true,
-      message: 'User registered successfully!',
+      message: 'User registered successfully! Please check your email for verification.',
       user: {
         id: 'user-' + Date.now(),
         email: email,
@@ -174,7 +183,8 @@ app.get('/api/health', (req, res) => {
     message: 'HealthScan QR API Server is running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    auth: '✅ SIMPLE AUTH READY (use /api/simple-auth/* endpoints)'
+    auth: '✅ SIMPLE AUTH READY (use /api/simple-auth/* endpoints)',
+    email_verification: '✅ EMAIL VERIFICATION ENABLED'
   });
 });
 
@@ -213,7 +223,7 @@ app.all('*', (req, res) => {
       'GET /api/medical/test',
       'GET /api/admin/test',
       'POST /api/simple-test',
-      'POST /api/simple-auth/register',
+      'POST /api/simple-auth/register (WITH EMAIL VERIFICATION)',
       'POST /api/simple-auth/login',
       'GET /api/simple-auth/me',
       'POST /api/auth/register (existing)',
@@ -228,8 +238,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
   console.log(`🎉 SIMPLE AUTH ENDPOINTS READY!`);
+  console.log(`📧 EMAIL VERIFICATION ENABLED!`);
   console.log(`📋 Use these NEW endpoints:`);
-  console.log(`   POST /api/simple-auth/register`);
+  console.log(`   POST /api/simple-auth/register (with email verification)`);
   console.log(`   POST /api/simple-auth/login`);
   console.log(`   GET /api/simple-auth/me`);
 });
