@@ -1,4 +1,4 @@
-// admin.js - RESTORED WORKING DELETE LOGIC
+// admin.js - COMPLETE FIXED VERSION WITH FIREBASE DELETION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -116,7 +116,7 @@ router.post('/admin-login', async (req, res) => {
   }
 });
 
-// ==================== ACTIVITY LOGS - ORIGINAL WORKING VERSION ====================
+// ==================== ACTIVITY LOGS ====================
 
 // GET ACTIVITY LOGS
 router.get('/activity-logs', async (req, res) => {
@@ -125,7 +125,6 @@ router.get('/activity-logs', async (req, res) => {
     
     console.log('📋 Fetching activity logs...', { admin_id });
 
-    // Check if activity_logs table exists
     const tableCheck = await pool.query(`
       SELECT EXISTS (
         SELECT FROM information_schema.tables 
@@ -308,7 +307,7 @@ router.delete('/clear-logs', async (req, res) => {
   }
 });
 
-// ==================== USER MANAGEMENT - ORIGINAL WORKING DELETE ====================
+// ==================== USER MANAGEMENT ====================
 
 // GET ALL USERS
 router.get('/users', async (req, res) => {
@@ -319,6 +318,9 @@ router.get('/users', async (req, res) => {
       SELECT 
         u.id as user_id,
         u.email,
+        u.username,
+        u.email_verified,
+        u.firebase_uid,
         u.created_at,
         mi.photo_url as profile_photo,
         COALESCE(mi.full_name, 'Not provided') as full_name,
@@ -357,6 +359,9 @@ router.get('/users', async (req, res) => {
       return {
         user_id: user.user_id,
         email: user.email,
+        username: user.username,
+        email_verified: user.email_verified,
+        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: profile_photo || '',
         full_name: user.full_name || 'Not provided',
@@ -383,11 +388,14 @@ router.get('/users', async (req, res) => {
     console.error('❌ Get users error:', err.message);
     
     try {
-      const simpleResult = await pool.query('SELECT id as user_id, email, created_at FROM users ORDER BY created_at DESC');
+      const simpleResult = await pool.query('SELECT id as user_id, email, username, email_verified, firebase_uid, created_at FROM users ORDER BY created_at DESC');
       
       const simpleUsers = simpleResult.rows.map(user => ({
         user_id: user.user_id,
         email: user.email,
+        username: user.username,
+        email_verified: user.email_verified,
+        firebase_uid: user.firebase_uid,
         created_at: user.created_at,
         profile_photo: '',
         full_name: 'Not available',
@@ -414,7 +422,7 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER - ORIGINAL WORKING VERSION + FIREBASE CLEANUP
+// ✅ DELETE USER - WITH REAL FIREBASE DELETION
 router.delete('/delete-user/:user_id', async (req, res) => {
   try {
     const { user_id } = req.params;
@@ -427,7 +435,7 @@ router.delete('/delete-user/:user_id', async (req, res) => {
       });
     }
 
-    // Get user info for logging before deletion
+    // Get user info before deletion
     const userResult = await pool.query(
       `SELECT u.email, u.firebase_uid, mi.full_name 
        FROM users u 
@@ -449,26 +457,44 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
     console.log(`🗑️ Starting deletion process for user: ${userEmail} (Firebase UID: ${userFirebaseUid})`);
 
-    // ✅ ADDED: Delete from Firebase Auth if UID exists
+    // ✅ DELETE FROM FIREBASE AUTH
+    let firebaseDeleted = false;
+    let firebaseError = null;
+
     if (userFirebaseUid) {
-      console.log('🔥 Deleting Firebase user:', userFirebaseUid);
-      try {
-        const firebaseResult = await firebaseEmailService.deleteFirebaseUser(userFirebaseUid);
-        if (firebaseResult.success) {
-          console.log('✅ Firebase user deletion initiated');
-        }
-      } catch (firebaseError) {
-        console.log('⚠️ Firebase deletion failed, continuing with DB deletion:', firebaseError.message);
+      console.log('🔥 Deleting Firebase user by UID:', userFirebaseUid);
+      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(userFirebaseUid);
+      
+      if (firebaseResult.success) {
+        firebaseDeleted = true;
+        console.log('✅ Firebase user deleted successfully');
+      } else {
+        firebaseError = firebaseResult.error;
+        console.log('❌ Firebase deletion failed:', firebaseError);
       }
     }
 
-    // Start a transaction to ensure all deletions happen
+    // If UID deletion fails or no UID, try by email
+    if (!firebaseDeleted && userEmail) {
+      console.log('🔥 Attempting Firebase deletion by email:', userEmail);
+      const firebaseResult = await firebaseEmailService.deleteFirebaseUserByEmail(userEmail);
+      
+      if (firebaseResult.success) {
+        firebaseDeleted = true;
+        console.log('✅ Firebase user deleted successfully by email');
+      } else {
+        firebaseError = firebaseResult.error;
+        console.log('❌ Firebase email deletion failed:', firebaseError);
+      }
+    }
+
+    // Start transaction for database deletion
     const client = await pool.connect();
     
     try {
       await client.query('BEGIN');
 
-      // Delete from medical_info first (due to foreign key constraint)
+      // Delete from medical_info first
       await client.query('DELETE FROM medical_info WHERE user_id = $1', [user_id]);
       
       // Delete from users
@@ -478,14 +504,24 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
       console.log(`✅ User ${userEmail} deleted successfully from database`);
 
-      res.json({
-        success: true,
-        message: 'User deleted successfully',
-        deleted_user: {
-          email: userEmail,
-          firebase_uid: userFirebaseUid
-        }
-      });
+    // Prepare response message
+    let message = 'User deleted successfully from database.';
+    if (firebaseDeleted) {
+      message += ' Firebase account also deleted.';
+    } else {
+      message += ` Note: Firebase account may need manual deletion. Error: ${firebaseError}`;
+    }
+
+    res.json({
+      success: true,
+      message: message,
+      deleted_user: {
+        email: userEmail,
+        firebase_uid: userFirebaseUid,
+        firebase_deleted: firebaseDeleted,
+        firebase_error: firebaseError
+      }
+    });
 
     } catch (error) {
       await client.query('ROLLBACK');
@@ -603,6 +639,8 @@ router.post('/unapprove-user', async (req, res) => {
   }
 });
 
+// ==================== PROFILE PHOTO MANAGEMENT ====================
+
 // BASE64 PROFILE PHOTO UPLOAD
 router.post('/change-user-profile-base64', async (req, res) => {
   try {
@@ -687,6 +725,116 @@ router.post('/change-user-profile-base64', async (req, res) => {
     });
   }
 });
+
+// FILE UPLOAD PROFILE PHOTO
+router.post('/change-user-profile', upload.single('profile_photo'), async (req, res) => {
+  try {
+    const { user_id } = req.body;
+    const file = req.file;
+
+    console.log('📸 Change profile photo request received:', {
+      user_id: user_id,
+      hasFile: !!file,
+      fileName: file?.filename
+    });
+
+    if (!user_id) {
+      if (file) {
+        fs.unlinkSync(file.path);
+      }
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
+    }
+
+    if (!file) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Profile photo file is required' 
+      });
+    }
+
+    const photoUrl = `/uploads/${file.filename}`;
+    
+    console.log('💾 Updating database with photo URL:', photoUrl);
+    
+    const result = await pool.query(
+      `UPDATE medical_info 
+       SET photo_url = $1, updated_at = NOW()
+       WHERE user_id = $2
+       RETURNING *`,
+      [photoUrl, user_id]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('⚠️ No existing medical_info record, creating one...');
+      
+      const userResult = await pool.query(
+        'SELECT email FROM users WHERE id = $1',
+        [user_id]
+      );
+      
+      if (userResult.rows.length === 0) {
+        fs.unlinkSync(file.path);
+        return res.status(404).json({
+          success: false,
+          error: 'User not found'
+        });
+      }
+      
+      const userEmail = userResult.rows[0]?.email || 'Unknown User';
+      
+      const insertResult = await pool.query(
+        `INSERT INTO medical_info (user_id, photo_url, full_name, updated_at)
+         VALUES ($1, $2, $3, NOW()) RETURNING *`,
+        [user_id, photoUrl, userEmail]
+      );
+      
+      console.log('✅ Created new medical_info record');
+    }
+
+    console.log('✅ Profile photo updated successfully for user:', user_id);
+
+    res.json({
+      success: true,
+      message: 'Profile photo updated successfully',
+      new_photo_url: photoUrl
+    });
+
+  } catch (err) {
+    console.error('❌ Change user profile error:', err.message);
+    
+    if (req.file) {
+      try {
+        fs.unlinkSync(req.file.path);
+        console.log('🗑️ Cleaned up uploaded file due to error');
+      } catch (cleanupError) {
+        console.error('Error cleaning up file:', cleanupError.message);
+      }
+    }
+    
+    if (err instanceof multer.MulterError) {
+      if (err.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({
+          success: false,
+          error: 'File size too large. Please upload images smaller than 5MB.'
+        });
+      }
+      return res.status(400).json({
+        success: false,
+        error: `File upload error: ${err.message}`
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
+// ==================== ADMIN PROFILE ====================
 
 // ADMIN PROFILE
 router.get('/profile', async (req, res) => {
