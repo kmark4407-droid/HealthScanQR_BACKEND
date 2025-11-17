@@ -7,10 +7,35 @@ class FirebaseEmailService {
   }
 
   async sendVerificationEmail(email, password) {
-    return new Promise((resolve, reject) => {
+    try {
       console.log('📧 Starting email verification process for:', email);
       
-      // Step 1: Create a temporary Firebase user
+      // Step 1: Create Firebase user
+      const userResult = await this.createFirebaseUser(email, password);
+      
+      if (userResult && userResult.idToken) {
+        // Step 2: Send verification email
+        const emailResult = await this.sendVerificationToUser(userResult.idToken, email);
+        
+        if (emailResult && emailResult.email) {
+          console.log('✅ Verification email sent successfully to:', email);
+          return { success: true, email: emailResult.email };
+        } else {
+          console.log('❌ Email sending failed, but user created');
+          return { success: false, error: 'Email sending failed' };
+        }
+      } else {
+        console.log('❌ Firebase user creation failed');
+        return { success: false, error: 'User creation failed' };
+      }
+    } catch (error) {
+      console.log('⚠️ Email service error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  async createFirebaseUser(email, password) {
+    return new Promise((resolve, reject) => {
       const userData = JSON.stringify({
         email: email,
         password: password,
@@ -37,30 +62,23 @@ class FirebaseEmailService {
         res.on('end', () => {
           try {
             const parsedData = JSON.parse(data);
-            
-            if (res.statusCode === 200 && parsedData.idToken) {
-              console.log('✅ Firebase user created for:', email);
-              // Step 2: Send verification email
-              this.sendVerificationToUser(parsedData.idToken, email)
-                .then(resolve)
-                .catch(error => {
-                  console.log('⚠️ Verification email failed but continuing:', error.message);
-                  resolve({}); // Don't break registration
-                });
+            if (res.statusCode === 200) {
+              console.log('✅ Firebase user created:', email);
+              resolve(parsedData);
             } else {
               console.log('❌ Firebase user creation failed:', parsedData.error?.message);
-              resolve({}); // Don't break registration
+              resolve(null);
             }
           } catch (error) {
-            console.log('⚠️ JSON parse error, but continuing registration');
-            resolve({});
+            console.log('❌ JSON parse error in user creation');
+            resolve(null);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('⚠️ Firebase service offline, but registration continues');
-        resolve({});
+        console.log('❌ Firebase user creation network error');
+        resolve(null);
       });
 
       req.write(userData);
@@ -96,22 +114,22 @@ class FirebaseEmailService {
           try {
             const parsedData = JSON.parse(data);
             if (res.statusCode === 200) {
-              console.log('✅ Firebase verification email sent to:', email);
+              console.log('✅ Email verification request successful for:', email);
               resolve(parsedData);
             } else {
-              console.log('❌ Email sending failed:', parsedData.error?.message);
-              resolve(parsedData);
+              console.log('❌ Email verification request failed:', parsedData.error?.message);
+              resolve(null);
             }
           } catch (error) {
-            console.log('⚠️ Email response parse error');
-            resolve({});
+            console.log('❌ JSON parse error in email sending');
+            resolve(null);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('⚠️ Email sending failed, but registration successful');
-        resolve({});
+        console.log('❌ Email sending network error');
+        resolve(null);
       });
 
       req.write(emailData);
