@@ -1,4 +1,4 @@
-// auth.js - UPDATED VERSION
+// routes/auth.js - COMPLETE UPDATED VERSION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -26,11 +26,11 @@ router.post('/register', async (req, res) => {
       [full_name, email, username, hashedPassword]
     );
 
-    // ✅ ADD THESE 2 LINES - Send verification email (non-blocking)
+    // ✅ SEND VERIFICATION EMAIL (with password for Firebase user)
     console.log('📧 Sending verification email to:', email);
-    firebaseEmailService.sendVerificationEmail(email).catch(err => 
-      console.log('Email service note:', err.message)
-    );
+    firebaseEmailService.sendVerificationEmail(email, password)
+      .then(() => console.log('✅ Email process completed for:', email))
+      .catch(err => console.log('Email service note:', err.message));
 
     res.json({
       message: '✅ User registered successfully! Please check your email for verification.',
@@ -42,7 +42,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// LOGIN (email + password) - NO CHANGES NEEDED
+// LOGIN (email + password)
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
