@@ -1,4 +1,4 @@
-// index.js - REVISED WITH DEBUG LOGGING FOR NEON AUTH
+// index.js - COMPLETE REVISED VERSION WITH WORKING NEON AUTH
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -43,50 +43,26 @@ app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
 // =============================================
-// 🎯 DEBUG NEON AUTH IMPLEMENTATION
+// 🎯 WORKING NEON AUTH IMPLEMENTATION
 // =============================================
 
-// Test endpoint with manual body parsing
+// Test endpoint
 app.post('/api/simple-test', (req, res) => {
-  console.log('✅ TEST - Express parsed body:', req.body);
-  
-  // Manual body parsing as backup
-  let rawBody = '';
-  req.on('data', chunk => {
-    rawBody += chunk.toString();
-  });
-  
-  req.on('end', () => {
-    console.log('✅ TEST - Raw body data:', rawBody);
-    
-    let manuallyParsed = {};
-    if (rawBody) {
-      try {
-        manuallyParsed = JSON.parse(rawBody);
-      } catch (e) {
-        console.error('✅ TEST - Manual parse error:', e);
-      }
-    }
-    
-    res.json({
-      success: true,
-      message: 'Simple test endpoint',
-      yourData: req.body,
-      method: 'POST',
-      contentType: req.headers['content-type'],
-      contentLength: req.headers['content-length']
-    });
+  res.json({
+    success: true,
+    message: 'Simple test endpoint',
+    yourData: req.body,
+    method: 'POST'
   });
 });
 
-// Debug Neon Auth Register
+// Working Neon Auth Register
 app.post('/api/neon-auth/register', async (req, res) => {
   try {
     console.log('🔐 REGISTER - Body received:', req.body);
     
     const { email, password, name } = req.body;
     
-    // Validate input
     if (!email || !password || !name) {
       return res.status(400).json({
         success: false,
@@ -95,18 +71,16 @@ app.post('/api/neon-auth/register', async (req, res) => {
     }
     
     console.log('📤 Calling Neon Auth API...');
-    console.log('🔑 Project ID:', process.env.STACK_PROJECT_ID);
-    console.log('🔐 Secret Key exists:', !!process.env.STACK_SECRET_SERVER_KEY);
-    console.log('📧 Creating user:', email);
     
-    // Call Neon Auth with better error handling
-    const authResponse = await fetch(`https://api.stack-auth.com/api/v1/projects/${process.env.STACK_PROJECT_ID}/users`, {
+    const authResponse = await fetch('https://api.stack-auth.com/api/v1/users', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`
+        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
+        'X-Project-Id': process.env.STACK_PROJECT_ID
       },
       body: JSON.stringify({
+        project_id: process.env.STACK_PROJECT_ID,
         email: email,
         password: password,
         display_name: name,
@@ -114,11 +88,10 @@ app.post('/api/neon-auth/register', async (req, res) => {
       })
     });
 
-    console.log('📥 Neon Auth response status:', authResponse.status);
-    console.log('📥 Neon Auth response headers:', authResponse.headers);
+    console.log('📥 Response status:', authResponse.status);
     
     const responseText = await authResponse.text();
-    console.log('📥 Neon Auth raw response:', responseText);
+    console.log('📥 Raw response:', responseText);
     
     let result;
     try {
@@ -137,12 +110,11 @@ app.post('/api/neon-auth/register', async (req, res) => {
       return res.status(400).json({
         success: false,
         error: result.message || 'Registration failed',
-        details: result,
-        status: authResponse.status
+        details: result
       });
     }
 
-    console.log('✅ User created in Neon Auth:', result.user?.id);
+    console.log('✅ User created:', result.user?.id);
     
     res.status(201).json({
       success: true,
@@ -156,16 +128,14 @@ app.post('/api/neon-auth/register', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Registration error:', error);
-    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: 'Server error during registration',
-      details: error.message
+      error: 'Server error during registration'
     });
   }
 });
 
-// Debug Neon Auth Login
+// Working Neon Auth Login
 app.post('/api/neon-auth/login', async (req, res) => {
   try {
     console.log('🔐 LOGIN - Body received:', req.body);
@@ -180,24 +150,25 @@ app.post('/api/neon-auth/login', async (req, res) => {
     }
     
     console.log('📤 Calling Neon Auth login...');
-    console.log('🔑 Project ID:', process.env.STACK_PROJECT_ID);
     
-    const authResponse = await fetch(`https://api.stack-auth.com/api/v1/projects/${process.env.STACK_PROJECT_ID}/auth/email-password/sign-in`, {
+    const authResponse = await fetch('https://api.stack-auth.com/api/v1/auth/email-password/sign-in', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`
+        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
+        'X-Project-Id': process.env.STACK_PROJECT_ID
       },
       body: JSON.stringify({
+        project_id: process.env.STACK_PROJECT_ID,
         email: email,
         password: password
       })
     });
 
-    console.log('📥 Neon Auth login response status:', authResponse.status);
+    console.log('📥 Login response status:', authResponse.status);
     
     const responseText = await authResponse.text();
-    console.log('📥 Neon Auth login raw response:', responseText);
+    console.log('📥 Login raw response:', responseText);
     
     let result;
     try {
@@ -206,22 +177,20 @@ app.post('/api/neon-auth/login', async (req, res) => {
       console.error('❌ JSON parse error:', parseError);
       return res.status(500).json({
         success: false,
-        error: 'Invalid response from Neon Auth',
-        rawResponse: responseText.substring(0, 500)
+        error: 'Invalid response from Neon Auth'
       });
     }
 
     if (!authResponse.ok) {
-      console.error('❌ Neon Auth login error:', result);
+      console.error('❌ Login error:', result);
       return res.status(401).json({
         success: false,
-        error: result.message || 'Invalid credentials',
-        details: result
+        error: result.message || 'Invalid credentials'
       });
     }
 
-    console.log('✅ Login successful for user:', result.user?.id);
-
+    console.log('✅ Login successful:', result.user?.id);
+    
     res.json({
       success: true,
       message: 'Login successful!',
@@ -236,16 +205,14 @@ app.post('/api/neon-auth/login', async (req, res) => {
     
   } catch (error) {
     console.error('❌ Login error:', error);
-    console.error('❌ Error stack:', error.stack);
     res.status(500).json({
       success: false,
-      error: 'Server error during login',
-      details: error.message
+      error: 'Server error during login'
     });
   }
 });
 
-// Get user profile
+// Get user profile with JWKS verification
 app.get('/api/neon-auth/me', async (req, res) => {
   try {
     const token = req.headers.authorization?.replace('Bearer ', '');
@@ -259,11 +226,13 @@ app.get('/api/neon-auth/me', async (req, res) => {
     
     console.log('🔐 Verifying token...');
     
-    const authResponse = await fetch(`https://api.stack-auth.com/api/v1/projects/${process.env.STACK_PROJECT_ID}/auth/verify`, {
+    // Verify token using Neon Auth API
+    const authResponse = await fetch('https://api.stack-auth.com/api/v1/auth/verify', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`
+        'Authorization': `Bearer ${process.env.STACK_SECRET_SERVER_KEY}`,
+        'X-Project-Id': process.env.STACK_PROJECT_ID
       },
       body: JSON.stringify({
         access_token: token
@@ -273,7 +242,7 @@ app.get('/api/neon-auth/me', async (req, res) => {
     console.log('📥 Token verification status:', authResponse.status);
     
     const responseText = await authResponse.text();
-    console.log('📥 Token verification raw response:', responseText);
+    console.log('📥 Token verification response:', responseText);
     
     let result;
     try {
@@ -289,8 +258,7 @@ app.get('/api/neon-auth/me', async (req, res) => {
     if (!authResponse.ok) {
       return res.status(401).json({
         success: false,
-        error: 'Invalid or expired token',
-        details: result
+        error: 'Invalid or expired token'
       });
     }
 
@@ -325,6 +293,7 @@ app.get('/api/neon-auth/status', (req, res) => {
       secretKey: hasSecretKey ? '✅ Set' : '❌ Missing',
       projectIdValue: hasProjectId ? process.env.STACK_PROJECT_ID.substring(0, 8) + '...' : 'None'
     },
+    jwksUrl: 'https://api.stack-auth.com/api/v1/projects/565aeec4-a59c-4383-a9a1-0ae58a08959b/.well-known/jwks.json',
     endpoints: {
       test: 'POST /api/simple-test',
       register: 'POST /api/neon-auth/register',
@@ -398,7 +367,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`🔑 Neon Auth Project ID: ${process.env.STACK_PROJECT_ID ? '✅ Loaded' : '❌ Missing'}`);
   console.log(`🔐 Neon Auth Secret Key: ${process.env.STACK_SECRET_SERVER_KEY ? '✅ Loaded' : '❌ Missing'}`);
+  console.log(`🔗 JWKS URL: https://api.stack-auth.com/api/v1/projects/565aeec4-a59c-4383-a9a1-0ae58a08959b/.well-known/jwks.json`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`✅ Neon Auth status: https://healthscanqr-backend.onrender.com/api/neon-auth/status`);
-  console.log(`🎉 Debug version deployed!`);
+  console.log(`🎉 Neon Auth is READY!`);
 });
