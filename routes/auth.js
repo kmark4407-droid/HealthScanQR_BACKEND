@@ -1,4 +1,4 @@
-// routes/auth.js - UPDATED LOGIN WITH FIREBASE CHECK
+// routes/auth.js - COMPLETE REVISED VERSION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -147,35 +147,6 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// ✅ NEW: Manual email verification endpoint
-router.post('/manual-verify-email', async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ message: 'Email is required' });
-    }
-
-    // Update user as verified
-    const result = await pool.query(
-      `UPDATE users SET email_verified = true WHERE email = $1 RETURNING id, email, email_verified`,
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.json({
-      message: '✅ Email manually verified successfully! You can now login.',
-      user: result.rows[0]
-    });
-  } catch (err) {
-    console.error('❌ Manual verification error:', err.message);
-    res.status(500).json({ message: 'Server error during manual verification' });
-  }
-});
-
 // VERIFY EMAIL ENDPOINT (for when user clicks verification link)
 router.post('/verify-email', async (req, res) => {
   try {
@@ -202,6 +173,35 @@ router.post('/verify-email', async (req, res) => {
   } catch (err) {
     console.error('❌ Email verification error:', err.message);
     res.status(500).json({ message: 'Server error during email verification' });
+  }
+});
+
+// MANUAL VERIFY EMAIL (for testing/admin)
+router.post('/manual-verify-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Update user as verified
+    const result = await pool.query(
+      `UPDATE users SET email_verified = true WHERE email = $1 RETURNING id, email, email_verified`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: '✅ Email manually verified successfully! You can now login.',
+      user: result.rows[0]
+    });
+  } catch (err) {
+    console.error('❌ Manual verification error:', err.message);
+    res.status(500).json({ message: 'Server error during manual verification' });
   }
 });
 
@@ -242,6 +242,203 @@ router.post('/resend-verification', async (req, res) => {
   } catch (err) {
     console.error('❌ Resend verification error:', err.message);
     res.status(500).json({ message: 'Server error' });
+  }
+});
+
+// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase)
+router.delete('/user', async (req, res) => {
+  try {
+    const { email, userId } = req.body;
+
+    if (!email && !userId) {
+      return res.status(400).json({ message: 'Email or user ID is required.' });
+    }
+
+    let user;
+
+    // Find user by email or ID
+    if (email) {
+      const result = await pool.query(
+        'SELECT * FROM users WHERE email = $1',
+        [email]
+      );
+      user = result.rows[0];
+    } else {
+      const result = await pool.query(
+        'SELECT * FROM users WHERE id = $1',
+        [userId]
+      );
+      user = result.rows[0];
+    }
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    // Step 1: Delete from Firebase Auth (if Firebase UID exists)
+    if (user.firebase_uid) {
+      console.log('🗑️ Deleting Firebase user with UID:', user.firebase_uid);
+      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
+      
+      if (firebaseResult.success) {
+        console.log('✅ Firebase user deletion process initiated');
+      } else {
+        console.log('⚠️ Firebase user deletion may need manual cleanup');
+      }
+    } else {
+      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
+    }
+
+    // Step 2: Delete user's medical records first (due to foreign key constraint)
+    try {
+      await pool.query(
+        'DELETE FROM medical_info WHERE user_id = $1',
+        [user.id]
+      );
+      console.log('✅ Medical records deleted for user:', user.id);
+    } catch (medicalError) {
+      console.log('⚠️ No medical records to delete or error:', medicalError.message);
+    }
+
+    // Step 3: Delete user from Neon DB
+    await pool.query(
+      'DELETE FROM users WHERE id = $1',
+      [user.id]
+    );
+
+    console.log('✅ User deleted from Neon DB:', user.email);
+
+    res.json({
+      message: '✅ User account deleted successfully from both database and authentication system.',
+      deletedUser: {
+        id: user.id,
+        email: user.email,
+        firebaseUid: user.firebase_uid
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ User deletion error:', err.message);
+    res.status(500).json({ message: 'Server error during user deletion' });
+  }
+});
+
+// ✅ ADMIN - DELETE USER BY ID
+router.delete('/admin/user/:userId', async (req, res) => {
+  try {
+    const userId = parseInt(req.params.userId);
+    
+    if (!userId || isNaN(userId)) {
+      return res.status(400).json({ message: 'Valid user ID is required.' });
+    }
+
+    // Get user data
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    const user = userResult.rows[0];
+
+    // Delete from Firebase Auth (if Firebase UID exists)
+    if (user.firebase_uid) {
+      console.log('🗑️ Admin: Deleting Firebase user with UID:', user.firebase_uid);
+      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
+      
+      if (firebaseResult.success) {
+        console.log('✅ Firebase user deletion process initiated');
+      }
+    }
+
+    // Delete user's medical records first
+    try {
+      await pool.query(
+        'DELETE FROM medical_info WHERE user_id = $1',
+        [userId]
+      );
+      console.log('✅ Medical records deleted for user:', userId);
+    } catch (medicalError) {
+      console.log('⚠️ No medical records to delete:', medicalError.message);
+    }
+
+    // Delete user from Neon DB
+    await pool.query(
+      'DELETE FROM users WHERE id = $1',
+      [userId]
+    );
+
+    console.log('✅ User deleted by admin:', user.email);
+
+    res.json({
+      message: '✅ User account deleted successfully.',
+      deletedUser: {
+        id: user.id,
+        email: user.email,
+        firebaseUid: user.firebase_uid
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Admin user deletion error:', err.message);
+    res.status(500).json({ message: 'Server error during user deletion' });
+  }
+});
+
+// ✅ GET USER BY EMAIL (for verification/deletion purposes)
+router.get('/user-by-email/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+
+    const result = await pool.query(
+      'SELECT id, email, username, firebase_uid, email_verified, created_at FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('❌ User lookup error:', err.message);
+    res.status(500).json({ message: 'Server error during user lookup' });
+  }
+});
+
+// ✅ GET USER PROFILE
+router.get('/me', async (req, res) => {
+  try {
+    const token = req.headers.authorization?.replace('Bearer ', '');
+    
+    if (!token) {
+      return res.status(401).json({ message: 'No token provided' });
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
+    
+    const result = await pool.query(
+      'SELECT id, full_name, email, username, email_verified, created_at FROM users WHERE id = $1',
+      [decoded.id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Profile error:', err.message);
+    res.status(401).json({ message: 'Invalid token' });
   }
 });
 
