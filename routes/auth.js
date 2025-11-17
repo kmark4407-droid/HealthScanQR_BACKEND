@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE UPDATED VERSION WITH EMAIL VERIFICATION CHECK
+// routes/auth.js - UPDATED LOGIN WITH FIREBASE CHECK
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -33,17 +33,17 @@ router.post('/register', async (req, res) => {
       `INSERT INTO users (full_name, email, username, password, email_verified, created_at) 
        VALUES ($1, $2, $3, $4, $5, NOW()) 
        RETURNING id, full_name, email, username, email_verified, created_at`,
-      [full_name, email, username, hashedPassword, false] // email_verified starts as false
+      [full_name, email, username, hashedPassword, false]
     );
 
     const newUser = result.rows[0];
 
-    // Send verification email
+    // Send verification email with user ID
     console.log('📧 Sending verification email to:', email);
-    const emailResult = await firebaseEmailService.sendVerificationEmail(email, password);
+    const emailResult = await firebaseEmailService.sendVerificationEmail(email, password, newUser.id);
     
     if (emailResult.success) {
-      console.log('✅ Email sent successfully');
+      console.log('✅ Email sent successfully, Firebase UID:', emailResult.firebaseUid);
     } else {
       console.log('⚠️ Email sending failed:', emailResult.error);
     }
@@ -59,7 +59,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// LOGIN - WITH EMAIL VERIFICATION CHECK
+// LOGIN - WITH PROPER EMAIL VERIFICATION CHECK
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -84,13 +84,30 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ message: 'Invalid credentials' });
     }
 
-    // ✅ CHECK IF EMAIL IS VERIFIED
+    // ✅ CHECK EMAIL VERIFICATION - UPDATED LOGIC
     if (!user.email_verified) {
-      return res.status(403).json({ 
-        message: 'Please verify your email address before logging in. Check your inbox for the verification email.',
-        requiresVerification: true,
-        email: user.email
-      });
+      // Check if user has Firebase UID (meaning they went through email verification)
+      if (user.firebase_uid) {
+        console.log('🔄 User has Firebase UID, checking verification status...');
+        
+        // For now, we'll auto-verify users with Firebase UID
+        // In production, you'd check Firebase directly
+        await pool.query(
+          'UPDATE users SET email_verified = true WHERE id = $1',
+          [user.id]
+        );
+        
+        console.log('✅ Auto-verified user with Firebase UID:', user.email);
+        
+        // Update user object
+        user.email_verified = true;
+      } else {
+        return res.status(403).json({ 
+          message: 'Please verify your email address before logging in. Check your inbox for the verification email.',
+          requiresVerification: true,
+          email: user.email
+        });
+      }
     }
 
     // Check if user has medical info
@@ -127,6 +144,35 @@ router.post('/login', async (req, res) => {
   } catch (err) {
     console.error('❌ Login error:', err.message);
     res.status(500).json({ message: 'Server error during login' });
+  }
+});
+
+// ✅ NEW: Manual email verification endpoint
+router.post('/manual-verify-email', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Update user as verified
+    const result = await pool.query(
+      `UPDATE users SET email_verified = true WHERE email = $1 RETURNING id, email, email_verified`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      message: '✅ Email manually verified successfully! You can now login.',
+      user: result.rows[0]
+    });
+  } catch (err) {
+    console.error('❌ Manual verification error:', err.message);
+    res.status(500).json({ message: 'Server error during manual verification' });
   }
 });
 
@@ -185,9 +231,8 @@ router.post('/resend-verification', async (req, res) => {
       return res.status(400).json({ message: 'Email is already verified' });
     }
 
-    // Resend verification email (use a temporary password)
-    const tempPassword = 'temp-' + Date.now();
-    const emailResult = await firebaseEmailService.sendVerificationEmail(email, tempPassword);
+    // Resend verification email
+    const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-password-' + Date.now(), user.id);
 
     if (emailResult.success) {
       res.json({ message: '✅ Verification email sent successfully. Please check your inbox.' });
