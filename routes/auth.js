@@ -1,4 +1,4 @@
-// routes/auth.js - CLEAN VERSION WITHOUT email-verification-service
+// routes/auth.js - COMPLETE REVISED FOR EMAIL VERIFICATION SYNC
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -158,47 +158,98 @@ router.post('/register', async (req, res) => {
 
 // ==================== EMAIL VERIFICATION SYNC ENDPOINTS ====================
 
-// ✅ VERIFICATION SYNC AFTER CLICKING LINK
+// ✅ VERIFICATION SYNC AFTER CLICKING FIREBASE LINK (POST)
 router.post('/verify-email-callback', async (req, res) => {
   try {
     const { email } = req.body;
+    
+    // Also support GET requests with query parameters (for Firebase redirects)
+    const emailFromQuery = req.query.email;
+    const finalEmail = email || emailFromQuery;
 
-    if (!email) {
+    if (!finalEmail) {
       return res.status(400).json({ 
         success: false,
         message: 'Email is required' 
       });
     }
 
-    console.log('📩 Email verification callback for:', email);
+    console.log('📩 POST Email verification callback for:', finalEmail);
 
+    // Update database to mark as verified
     const result = await pool.query(
       'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
-      [email]
+      [finalEmail]
     );
 
     if (result.rows.length === 0) {
+      console.log('❌ User not found for email:', finalEmail);
       return res.status(404).json({
         success: false,
         message: 'User not found'
       });
     }
 
-    console.log('✅ Email verified in database:', email);
+    console.log('✅ Email verified in database:', finalEmail);
 
+    // If this is a GET request (from Firebase redirect), redirect to frontend
+    if (req.method === 'GET' || req.query.redirect) {
+      return res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(finalEmail)}`);
+    }
+
+    // For POST requests, return JSON
     res.json({
       success: true,
       message: '🎉 Email verified successfully! You can now login.',
-      email: email,
+      email: finalEmail,
       verified: true
     });
 
   } catch (err) {
-    console.error('❌ Verification callback error:', err.message);
+    console.error('❌ POST Verification callback error:', err.message);
+    
+    // If GET request, redirect to frontend with error
+    if (req.method === 'GET') {
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=true');
+    }
+    
     res.status(500).json({ 
       success: false,
       message: 'Server error during verification sync' 
     });
+  }
+});
+
+// ✅ GET ENDPOINT FOR FIREBASE REDIRECTS
+router.get('/verify-email-callback', async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email');
+    }
+
+    console.log('📩 GET Email verification callback for:', email);
+
+    // Update database to mark as verified
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('❌ User not found for email:', email);
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=user_not_found');
+    }
+
+    console.log('✅ Email verified in database via GET:', email);
+
+    // Redirect to frontend with success
+    res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(email)}`);
+
+  } catch (err) {
+    console.error('❌ GET Verification callback error:', err.message);
+    res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
   }
 });
 
@@ -260,6 +311,94 @@ router.post('/resend-verification', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error during resend' 
+    });
+  }
+});
+
+// ==================== MANUAL SYNC ENDPOINTS ====================
+
+// ✅ MANUAL SYNC VERIFICATION STATUS
+router.post('/manual-sync-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🔧 Manual sync verification for:', email);
+
+    // Direct database verification
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    console.log('✅ Manual sync completed for:', email);
+
+    res.json({
+      success: true,
+      message: '✅ Manual sync successful! User can now login.',
+      user: result.rows[0],
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Manual sync error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during manual sync' 
+    });
+  }
+});
+
+// ✅ QUICK VERIFY - FOR TESTING (INSTANT VERIFICATION)
+router.post('/quick-verify', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('⚡ Quick verify for:', email);
+
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '✅ QUICK VERIFICATION SUCCESS! User can now login.',
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Quick verify error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during quick verify' 
     });
   }
 });
@@ -380,47 +519,6 @@ router.get('/verification-status/:email', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error checking status' 
-    });
-  }
-});
-
-// ✅ QUICK VERIFY - FOR TESTING
-router.post('/quick-verify', async (req, res) => {
-  try {
-    const { email } = req.body;
-
-    if (!email) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'Email is required' 
-      });
-    }
-
-    console.log('⚡ Quick verify for:', email);
-
-    const result = await pool.query(
-      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({
-        success: false,
-        message: 'User not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      message: '✅ QUICK VERIFICATION SUCCESS! User can now login.',
-      user: result.rows[0]
-    });
-
-  } catch (err) {
-    console.error('❌ Quick verify error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during quick verify' 
     });
   }
 });
