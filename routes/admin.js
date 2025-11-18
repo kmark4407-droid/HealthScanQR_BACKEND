@@ -3,7 +3,6 @@ import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
-import { deleteFirebaseUser } from '../services/firebase-admin-service.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
