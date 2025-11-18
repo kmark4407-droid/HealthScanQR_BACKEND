@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE WORKING VERSION WITH EMAIL + INSTANT VERIFICATION + FIXED SYNC
+// routes/auth.js - COMPLETE WORKING VERSION WITH FIREBASE FIXES
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -6,6 +6,95 @@ import pool from '../db.js';
 import emailVerificationService from '../services/email-verification-service.js';
 
 const router = express.Router();
+
+// ==================== FIREBASE TEST ENDPOINTS ====================
+
+// ✅ TEST FIREBASE CONNECTION
+router.post('/test-firebase', async (req, res) => {
+  try {
+    console.log('🧪 Testing Firebase connection...');
+    
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    const result = await firebaseEmailService.testFirebaseConnection();
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: '✅ Firebase connection is working!',
+        details: result.message
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: '❌ Firebase connection failed',
+        error: result.error,
+        solutions: [
+          'Check if Firebase API key is correct',
+          'Check if Firebase Authentication is enabled in Firebase Console',
+          'Check if the domain is authorized in Firebase Authentication settings',
+          'Check network connectivity to Firebase servers'
+        ]
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Firebase test error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
+    });
+  }
+});
+
+// ✅ DEBUG FIREBASE USER CREATION
+router.post('/debug-create-firebase-user', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required' 
+      });
+    }
+
+    console.log('🐛 Debug Firebase user creation for:', email);
+    
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    
+    // Test just the user creation part
+    const userResult = await firebaseEmailService.createFirebaseUser(email, password);
+
+    if (userResult && userResult.idToken) {
+      res.json({
+        success: true,
+        message: '✅ Firebase user creation successful!',
+        user: {
+          email: userResult.email,
+          localId: userResult.localId,
+          idToken: userResult.idToken ? 'Present' : 'Missing'
+        },
+        nextSteps: [
+          'Now test email sending with /api/auth/debug-send-verification',
+          'Or register normally to test full flow'
+        ]
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: '❌ Firebase user creation failed',
+        error: 'No user data returned'
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Debug Firebase user creation error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error: ' + err.message 
+    });
+  }
+});
 
 // ==================== INSTANT VERIFICATION ENDPOINTS ====================
 
@@ -820,6 +909,49 @@ router.get('/user-details/:email', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error: ' + err.message 
+    });
+  }
+});
+
+// ✅ DEBUG SEND VERIFICATION EMAIL
+router.post('/debug-send-verification', async (req, res) => {
+  try {
+    const { email, password, userId } = req.body;
+
+    if (!email || !password || !userId) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email, password, and userId are required' 
+      });
+    }
+
+    console.log('🐛 Debug send verification for:', email);
+    
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    
+    // Test just the email sending part
+    const emailResult = await firebaseEmailService.sendVerificationToUser(email, password, userId);
+
+    if (emailResult && emailResult.email) {
+      res.json({
+        success: true,
+        message: '✅ Verification email sent successfully!',
+        details: emailResult,
+        nextSteps: 'Check your email inbox and spam folder'
+      });
+    } else {
+      res.status(500).json({
+        success: false,
+        message: '❌ Failed to send verification email',
+        error: emailResult?.error || 'Unknown error'
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Debug send verification error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Error: ' + err.message 
     });
   }
 });
