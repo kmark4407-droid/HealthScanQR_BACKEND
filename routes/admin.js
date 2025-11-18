@@ -1,4 +1,4 @@
-// routes/admin.js - FIXED VERSION (NO FIREBASE ADMIN)
+// routes/admin.js - COMPLETE REVISED VERSION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
