@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - FOCUSED ON EMAIL CONFIRMATION
+// services/firebase-email-service.js - COMPLETE REVISED WITH SYNC SUPPORT
 import https from 'https';
 import pool from '../db.js';
 
