@@ -1,9 +1,9 @@
-// routes/auth.js - COMPLETE REVISED VERSION
+// routes/auth.js - COMPLETE REVISED VERSION WITH FIREBASE ADMIN SDK
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
-import firebaseEmailService from '../services/firebase-email-service.js';
+import { deleteFirebaseUser } from '../services/firebase-admin-service.js';
 
 const router = express.Router();
 
@@ -38,6 +38,9 @@ router.post('/register', async (req, res) => {
 
     const newUser = result.rows[0];
 
+    // Import the email service dynamically
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    
     // Send verification email with user ID
     console.log('📧 Sending verification email to:', email);
     const emailResult = await firebaseEmailService.sendVerificationEmail(email, password, newUser.id);
@@ -231,6 +234,9 @@ router.post('/resend-verification', async (req, res) => {
       return res.status(400).json({ message: 'Email is already verified' });
     }
 
+    // Import the email service dynamically
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+
     // Resend verification email
     const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-password-' + Date.now(), user.id);
 
@@ -245,7 +251,7 @@ router.post('/resend-verification', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase)
+// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase) - UPDATED WITH ADMIN SDK
 router.delete('/user', async (req, res) => {
   try {
     const { email, userId } = req.body;
@@ -275,15 +281,15 @@ router.delete('/user', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Step 1: Delete from Firebase Auth (if Firebase UID exists)
+    // Step 1: Delete from Firebase Auth using Admin SDK (if Firebase UID exists)
     if (user.firebase_uid) {
-      console.log('🗑️ Deleting Firebase user with UID:', user.firebase_uid);
-      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
+      console.log('🗑️ Deleting Firebase user with Admin SDK:', user.firebase_uid);
+      const firebaseResult = await deleteFirebaseUser(user.firebase_uid);
       
       if (firebaseResult.success) {
-        console.log('✅ Firebase user deletion process initiated');
+        console.log('✅ Firebase user deleted successfully with Admin SDK');
       } else {
-        console.log('⚠️ Firebase user deletion may need manual cleanup');
+        console.log('⚠️ Firebase user deletion may need manual cleanup:', firebaseResult.error);
       }
     } else {
       console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
@@ -323,7 +329,7 @@ router.delete('/user', async (req, res) => {
   }
 });
 
-// ✅ ADMIN - DELETE USER BY ID
+// ✅ ADMIN - DELETE USER BY ID - UPDATED WITH ADMIN SDK
 router.delete('/admin/user/:userId', async (req, res) => {
   try {
     const userId = parseInt(req.params.userId);
@@ -344,13 +350,15 @@ router.delete('/admin/user/:userId', async (req, res) => {
 
     const user = userResult.rows[0];
 
-    // Delete from Firebase Auth (if Firebase UID exists)
+    // Delete from Firebase Auth using Admin SDK (if Firebase UID exists)
     if (user.firebase_uid) {
-      console.log('🗑️ Admin: Deleting Firebase user with UID:', user.firebase_uid);
-      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(user.firebase_uid);
+      console.log('🗑️ Admin: Deleting Firebase user with Admin SDK:', user.firebase_uid);
+      const firebaseResult = await deleteFirebaseUser(user.firebase_uid);
       
       if (firebaseResult.success) {
-        console.log('✅ Firebase user deletion process initiated');
+        console.log('✅ Firebase user deleted successfully with Admin SDK');
+      } else {
+        console.log('⚠️ Firebase deletion may need manual cleanup:', firebaseResult.error);
       }
     }
 
