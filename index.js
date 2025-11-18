@@ -37,14 +37,27 @@ app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
-// Use routes
-app.use('/api/auth', authRoutes);
-app.use('/api/medical', medicalRoutes);
-app.use('/api/admin', adminRoutes);
+// =============================================
+// 🎯 ROOT AND CORE ENDPOINTS
+// =============================================
 
-// =============================================
-// 🎯 CORE ENDPOINTS
-// =============================================
+// Root route - Fix the 404 error
+app.get('/', (req, res) => {
+  res.json({ 
+    status: 'OK',
+    message: 'HealthScan QR API Server is running! 🚀',
+    timestamp: new Date().toISOString(),
+    environment: process.env.NODE_ENV || 'development',
+    version: '1.0.0',
+    endpoints: {
+      health: '/api/health',
+      auth: '/api/auth/*',
+      medical: '/api/medical/*', 
+      admin: '/api/admin/*',
+      email_verification: '/api/auth/firebase-verify-callback'
+    }
+  });
+});
 
 // Health check route
 app.get('/api/health', (req, res) => {
@@ -64,6 +77,15 @@ app.get('/api/test', (req, res) => {
     message: 'API test endpoint is working! 🎉'
   });
 });
+
+// Use routes (after root route)
+app.use('/api/auth', authRoutes);
+app.use('/api/medical', medicalRoutes);
+app.use('/api/admin', adminRoutes);
+
+// =============================================
+// 🎯 EMAIL VERIFICATION ENDPOINTS
+// =============================================
 
 // ✅ DEBUG ENDPOINT - See what Firebase is actually sending
 app.get('/api/debug-firebase-callback', async (req, res) => {
@@ -344,7 +366,11 @@ app.post('/api/test-email-verification', async (req, res) => {
   }
 });
 
-// Catch-all handler
+// =============================================
+// 🎯 CATCH-ALL HANDLER
+// =============================================
+
+// Catch-all handler for undefined routes
 app.all('*', (req, res) => {
   console.log(`⚠️ 404 - Route not found: ${req.method} ${req.url}`);
   res.status(404).json({ 
@@ -353,6 +379,7 @@ app.all('*', (req, res) => {
     method: req.method,
     url: req.url,
     available_endpoints: [
+      'GET /',
       'GET /api/health',
       'GET /api/test',
       'GET /api/debug-firebase-callback (Debug)',
@@ -363,7 +390,10 @@ app.all('*', (req, res) => {
       'POST /api/test-email-verification',
       'POST /api/auth/register',
       'POST /api/auth/login',
-      'GET /api/auth/me'
+      'GET /api/auth/me',
+      'POST /api/admin/admin-login',
+      'GET /api/admin/users',
+      'GET /api/admin/activity-logs'
     ]
   });
 });
@@ -373,6 +403,7 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
+  console.log(`✅ Root endpoint: https://healthscanqr-backend.onrender.com/`);
   console.log(`🎉 EMAIL VERIFICATION SYSTEM READY!`);
   console.log(`📧 Firebase callback: /api/auth/firebase-verify-callback`);
   console.log(`📧 Alternative callback: /api/verify-callback`);
