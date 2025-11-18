@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE WORKING VERSION WITH EMAIL + INSTANT VERIFICATION
+// routes/auth.js - COMPLETE WORKING VERSION WITH EMAIL + INSTANT VERIFICATION + FIXED SYNC
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -223,6 +223,7 @@ router.post('/register', async (req, res) => {
     if (emailResult.success) {
       response.emailStatus = 'Verification email sent - check your inbox';
       response.verificationInstruction = 'Click the link in the email OR use POST /api/auth/super-verify';
+      response.autoSyncInfo = 'System will automatically check verification status every 10 seconds for 10 minutes';
     } else if (autoVerified) {
       response.emailStatus = 'Auto-verified - ready to login!';
       response.instruction = 'You can login immediately';
@@ -232,7 +233,9 @@ router.post('/register', async (req, res) => {
     }
 
     response.testEndpoints = {
-      verify: 'POST /api/auth/super-verify',
+      instantVerify: 'POST /api/auth/super-verify',
+      manualSync: 'POST /api/auth/manual-sync-verification',
+      quickVerify: 'POST /api/auth/quick-verify',
       checkStatus: 'GET /api/auth/verification-status/' + email,
       login: 'POST /api/auth/login'
     };
@@ -365,9 +368,12 @@ router.post('/login', async (req, res) => {
           'Check your email for verification link',
           'Use POST /api/auth/resend-verification to resend email',
           'Use POST /api/auth/super-verify for instant verification',
-          'Use POST /api/auth/force-verify-firebase to sync with Firebase'
+          'Use POST /api/auth/manual-sync-verification to sync with Firebase',
+          'Use POST /api/auth/quick-verify for immediate access'
         ],
-        instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }'
+        instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }',
+        manualSync: 'POST /api/auth/manual-sync-verification with: { "email": "' + user.email + '" }',
+        quickVerify: 'POST /api/auth/quick-verify with: { "email": "' + user.email + '" }'
       });
     }
 
@@ -522,6 +528,152 @@ router.post('/sync-all-firebase', async (req, res) => {
   }
 });
 
+// ==================== IMMEDIATE FIX ENDPOINTS ====================
+
+// ✅ MANUAL SYNC VERIFICATION STATUS
+router.post('/manual-sync-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🔧 Manual sync verification for:', email);
+
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    const result = await firebaseEmailService.manualSyncUserVerification(email);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: '✅ Manual sync successful! User can now login.',
+        user: result.user,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: result.message
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Manual sync error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
+    });
+  }
+});
+
+// ✅ QUICK VERIFY - FOR TESTING
+router.post('/quick-verify', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('⚡ Quick verify for:', email);
+
+    // Direct database update - no Firebase check
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true, updated_at = NOW() WHERE email = $1 RETURNING *',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'User not found'
+      });
+    }
+
+    res.json({
+      success: true,
+      message: '✅ QUICK VERIFICATION SUCCESS! User can now login immediately.',
+      user: result.rows[0],
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Quick verify error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
+    });
+  }
+});
+
+// ✅ CHECK FIREBASE VERIFICATION STATUS DIRECTLY
+router.post('/check-firebase-status', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🔍 Checking Firebase status for:', email);
+
+    // Get user from database
+    const userResult = await pool.query(
+      'SELECT id, email, firebase_uid, email_verified FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+    
+    if (!user.firebase_uid) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'No Firebase UID found for user' 
+      });
+    }
+
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    const isVerified = await firebaseEmailService.checkFirebaseVerification(user.firebase_uid);
+
+    res.json({
+      success: true,
+      email: user.email,
+      firebaseUid: user.firebase_uid,
+      firebaseVerified: isVerified,
+      databaseVerified: user.email_verified,
+      syncStatus: isVerified === user.email_verified ? 'IN SYNC' : 'OUT OF SYNC',
+      needsUpdate: isVerified && !user.email_verified,
+      message: isVerified ? 
+        'Email is verified in Firebase' : 
+        'Email is NOT verified in Firebase'
+    });
+
+  } catch (err) {
+    console.error('❌ Check Firebase status error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
+    });
+  }
+});
+
 // ==================== USER MANAGEMENT ====================
 
 // GET USER PROFILE
@@ -600,6 +752,74 @@ router.delete('/user', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error during deletion' 
+    });
+  }
+});
+
+// ==================== DEBUG ENDPOINTS ====================
+
+// GET USER DETAILS WITH FIREBASE INFO
+router.get('/user-details/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+
+    const result = await pool.query(
+      `SELECT 
+        u.id, u.email, u.username, u.email_verified, u.firebase_uid, u.created_at,
+        mi.full_name, mi.photo_url
+       FROM users u
+       LEFT JOIN medical_info mi ON u.id = mi.user_id
+       WHERE u.email = $1`,
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = result.rows[0];
+
+    // Check Firebase status if UID exists
+    let firebaseStatus = null;
+    if (user.firebase_uid) {
+      try {
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+        const isVerified = await firebaseEmailService.checkFirebaseVerification(user.firebase_uid);
+        firebaseStatus = {
+          verified: isVerified,
+          lastChecked: new Date().toISOString()
+        };
+      } catch (firebaseError) {
+        firebaseStatus = {
+          error: firebaseError.message,
+          lastChecked: new Date().toISOString()
+        };
+      }
+    }
+
+    res.json({
+      success: true,
+      user: user,
+      firebaseStatus: firebaseStatus,
+      syncStatus: firebaseStatus ? 
+        (firebaseStatus.verified === user.email_verified ? 'IN SYNC' : 'OUT OF SYNC') : 
+        'NO FIREBASE UID',
+      actions: {
+        sync: 'POST /api/auth/manual-sync-verification',
+        verify: 'POST /api/auth/super-verify',
+        quickVerify: 'POST /api/auth/quick-verify',
+        checkFirebase: 'POST /api/auth/check-firebase-status'
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ User details error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
     });
   }
 });
