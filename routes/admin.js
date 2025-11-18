@@ -1,4 +1,4 @@
-// routes/admin.js - COMPLETE FIXED VERSION WITH FIREBASE ADMIN SDK
+// routes/admin.js - FIXED VERSION (NO FIREBASE ADMIN)
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -55,6 +55,8 @@ router.post('/admin-login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
+    console.log('🔐 ADMIN LOGIN ATTEMPT:', email);
+
     if (!email || !password) {
       return res.status(400).json({ 
         success: false,
@@ -68,6 +70,7 @@ router.post('/admin-login', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
+      console.log('❌ Admin not found:', email);
       return res.status(401).json({ 
         success: false,
         error: 'Invalid admin credentials' 
@@ -78,6 +81,7 @@ router.post('/admin-login', async (req, res) => {
     const validPassword = await bcrypt.compare(password, admin.password);
 
     if (!validPassword) {
+      console.log('❌ Invalid password for admin:', email);
       return res.status(401).json({ 
         success: false,
         error: 'Invalid admin credentials' 
@@ -93,6 +97,8 @@ router.post('/admin-login', async (req, res) => {
       process.env.JWT_SECRET || 'secret_key',
       { expiresIn: '24h' }
     );
+
+    console.log('✅ Admin login successful:', email);
 
     res.json({
       success: true,
@@ -421,7 +427,7 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER - WITH REAL FIREBASE ADMIN SDK DELETION
+// ✅ DELETE USER - WITHOUT FIREBASE ADMIN
 router.delete('/delete-user/:user_id', async (req, res) => {
   try {
     const { user_id } = req.params;
@@ -456,29 +462,9 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
     console.log(`🗑️ Starting deletion process for user: ${userEmail} (Firebase UID: ${userFirebaseUid})`);
 
-    // ✅ DELETE FROM FIREBASE AUTH USING ADMIN SDK
-    let firebaseDeleted = false;
-    let firebaseError = null;
-
-    if (userFirebaseUid) {
-      console.log('🔥 Deleting Firebase user with Admin SDK:', userFirebaseUid);
-      try {
-        const firebaseResult = await deleteFirebaseUser(userFirebaseUid);
-        firebaseDeleted = firebaseResult.success;
-        firebaseError = firebaseResult.error;
-        
-        if (firebaseDeleted) {
-          console.log('✅ Firebase user deleted successfully with Admin SDK');
-        } else {
-          console.log('⚠️ Firebase deletion had issues:', firebaseError);
-        }
-      } catch (firebaseErr) {
-        console.log('❌ Firebase deletion error:', firebaseErr.message);
-        firebaseError = firebaseErr.message;
-      }
-    } else {
-      console.log('ℹ️ No Firebase UID found for user, skipping Firebase deletion');
-    }
+    // Note: Firebase user deletion is skipped since we removed Firebase Admin
+    console.log('ℹ️ Firebase Admin SDK not available - skipping Firebase user deletion');
+    console.log('ℹ️ Firebase user must be deleted manually from Firebase Console if needed');
 
     // Start transaction for database deletion
     const client = await pool.connect();
@@ -495,16 +481,6 @@ router.delete('/delete-user/:user_id', async (req, res) => {
       await client.query('COMMIT');
 
       console.log(`✅ User ${userEmail} deleted successfully from database`);
-
-      // Prepare response message
-      let message = 'User deleted successfully from database.';
-      if (firebaseDeleted) {
-        message += ' Firebase account also deleted.';
-      } else if (firebaseError) {
-        message += ` Note: Firebase account may need manual deletion. Error: ${firebaseError}`;
-      } else {
-        message += ' No Firebase account found to delete.';
-      }
 
       // Log the activity
       try {
@@ -525,12 +501,10 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
       res.json({
         success: true,
-        message: message,
+        message: 'User deleted successfully from database. Note: Firebase account may need manual deletion from Firebase Console.',
         deleted_user: {
           email: userEmail,
-          firebase_uid: userFirebaseUid,
-          firebase_deleted: firebaseDeleted,
-          firebase_error: firebaseError
+          firebase_uid: userFirebaseUid
         }
       });
 
@@ -915,30 +889,12 @@ router.post('/force-verify-user', async (req, res) => {
     }
 
     const userEmail = userResult.rows[0].email;
-    const userFirebaseUid = userResult.rows[0].firebase_uid;
 
-    let result;
-    if (userFirebaseUid) {
-      // Use Firebase sync method
-      const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
-      const firebaseResult = await firebaseEmailService.forceVerifyByFirebaseUid(userFirebaseUid);
-      
-      if (firebaseResult.success) {
-        result = { success: true, message: 'User verified via Firebase sync' };
-      } else {
-        // Fallback to direct verification
-        result = await pool.query(
-          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
-          [user_id]
-        );
-      }
-    } else {
-      // Direct verification
-      result = await pool.query(
-        'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
-        [user_id]
-      );
-    }
+    // Direct database verification
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+      [user_id]
+    );
 
     // Log the activity
     try {
@@ -962,7 +918,7 @@ router.post('/force-verify-user', async (req, res) => {
       message: 'User verified successfully',
       user: {
         email: userEmail,
-        firebase_uid: userFirebaseUid
+        email_verified: true
       }
     });
 
