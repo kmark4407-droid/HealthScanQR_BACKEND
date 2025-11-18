@@ -1063,68 +1063,79 @@ router.delete('/user', async (req, res) => {
 // ==================== DEBUG ENDPOINTS ====================
 
 // GET USER DETAILS WITH FIREBASE INFO
-router.get('/user-details/:email', async (req, res) => {
+router.post('/register', async (req, res) => {
   try {
-    const email = req.params.email;
+    const { full_name, email, username, password } = req.body;
 
-    const result = await pool.query(
-      `SELECT 
-        u.id, u.email, u.username, u.email_verified, u.firebase_uid, u.created_at,
-        mi.full_name, mi.photo_url
-       FROM users u
-       LEFT JOIN medical_info mi ON u.id = mi.user_id
-       WHERE u.email = $1`,
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ 
+    if (!full_name || !email || !username || !password) {
+      return res.status(400).json({ 
         success: false,
-        message: 'User not found' 
+        message: 'All fields are required.' 
       });
     }
 
-    const user = result.rows[0];
+    // Check if user already exists
+    const existingUser = await pool.query(
+      'SELECT id FROM users WHERE email = $1 OR username = $2',
+      [email, username]
+    );
 
-    // Check Firebase status if UID exists
-    let firebaseStatus = null;
-    if (user.firebase_uid) {
-      try {
-        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
-        const isVerified = await firebaseEmailService.checkFirebaseVerification(user.firebase_uid);
-        firebaseStatus = {
-          verified: isVerified,
-          lastChecked: new Date().toISOString()
-        };
-      } catch (firebaseError) {
-        firebaseStatus = {
-          error: firebaseError.message,
-          lastChecked: new Date().toISOString()
-        };
-      }
+    if (existingUser.rows.length > 0) {
+      return res.status(409).json({ 
+        success: false,
+        message: 'Email or username already exists' 
+      });
     }
 
-    res.json({
-      success: true,
-      user: user,
-      firebaseStatus: firebaseStatus,
-      syncStatus: firebaseStatus ? 
-        (firebaseStatus.verified === user.email_verified ? 'IN SYNC' : 'OUT OF SYNC') : 
-        'NO FIREBASE UID',
-      actions: {
-        sync: 'POST /api/auth/manual-sync-verification',
-        verify: 'POST /api/auth/super-verify',
-        quickVerify: 'POST /api/auth/quick-verify',
-        triggerEmail: 'POST /api/auth/trigger-verification-email',
-        checkFirebase: 'POST /api/auth/check-firebase-status'
+    const hashedPassword = await bcrypt.hash(password, 10);
+
+    // Insert user - START AS VERIFIED
+    const result = await pool.query(
+      `INSERT INTO users (full_name, email, username, password, email_verified, created_at) 
+       VALUES ($1, $2, $3, $4, $5, NOW()) 
+       RETURNING id, full_name, email, username, email_verified, created_at`,
+      [full_name, email, username, hashedPassword, true] // TRUE = AUTO-VERIFIED
+    );
+
+    const newUser = result.rows[0];
+
+    console.log('✅ User registered and auto-verified in database:', email);
+
+    // Try Firebase in background (non-blocking)
+    setTimeout(async () => {
+      try {
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+        const firebaseResult = await firebaseEmailService.sendVerificationEmail(email, password, newUser.id);
+        console.log('🔥 Firebase background process:', firebaseResult.message);
+      } catch (firebaseError) {
+        console.log('🔥 Firebase background error (ignored):', firebaseError.message);
       }
+    }, 1000);
+
+    // Generate token immediately
+    const token = jwt.sign(
+      { 
+        id: newUser.id, 
+        email: newUser.email,
+        emailVerified: true 
+      },
+      process.env.JWT_SECRET || 'secret_key',
+      { expiresIn: '24h' }
+    );
+
+    res.status(201).json({
+      success: true,
+      message: '🎉 Registration successful! You are automatically verified and can login immediately.',
+      token: token,
+      user: newUser,
+      note: 'No email confirmation needed - you are ready to use the app!'
     });
 
   } catch (err) {
-    console.error('❌ User details error:', err.message);
+    console.error('❌ Registration error:', err.message);
     res.status(500).json({ 
       success: false,
-      message: 'Server error: ' + err.message 
+      message: 'Server error during registration: ' + err.message 
     });
   }
 });
