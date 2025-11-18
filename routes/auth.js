@@ -1,4 +1,4 @@
-// routes/auth.js - CLEANED UP VERSION
+// routes/auth.js - CLEAN VERSION WITHOUT email-verification-service
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
