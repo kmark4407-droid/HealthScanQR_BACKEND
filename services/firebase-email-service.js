@@ -285,7 +285,7 @@ class FirebaseEmailService {
     }
   }
 
-  // ✅ VERIFY OOB CODE (When user clicks email link)
+  // ✅ VERIFY OOB CODE - EXTRACTS EMAIL FROM VERIFICATION LINK
   async verifyOobCode(oobCode) {
     return new Promise((resolve, reject) => {
       console.log('🔐 Verifying OOB code from email link...');
@@ -314,15 +314,18 @@ class FirebaseEmailService {
         
         res.on('end', () => {
           console.log('📡 OOB verification response status:', res.statusCode);
+          console.log('📡 OOB verification response data:', data);
           
           try {
             const parsedData = JSON.parse(data);
             if (res.statusCode === 200) {
-              console.log('✅ OOB code verification SUCCESS - Email verified:', parsedData.email);
+              console.log('✅ OOB code verification SUCCESS');
+              console.log('✅ Verified email:', parsedData.email);
               resolve({ 
                 success: true, 
                 email: parsedData.email,
-                emailVerified: true 
+                emailVerified: true,
+                localId: parsedData.localId
               });
             } else {
               console.log('❌ OOB code verification FAILED:', parsedData.error);
@@ -332,6 +335,7 @@ class FirebaseEmailService {
               });
             }
           } catch (error) {
+            console.log('❌ JSON parse error in OOB response');
             resolve({ success: false, error: 'Failed to parse OOB verification response' });
           }
         });
