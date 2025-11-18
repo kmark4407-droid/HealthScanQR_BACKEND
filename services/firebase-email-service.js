@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - SIMPLIFIED VERSION
+// services/firebase-email-service.js - FIXED VERSION
 import https from 'https';
 import pool from '../db.js';
 
@@ -24,10 +24,8 @@ class FirebaseEmailService {
         if (emailResult && emailResult.email) {
           console.log('✅ Verification email sent to:', email);
           
-          // Schedule a verification check after 30 seconds
-          setTimeout(() => {
-            this.scheduleVerificationCheck(email, userResult.localId);
-          }, 30000);
+          // Start verification polling immediately and more frequently
+          this.startVerificationPolling(email, userResult.localId, userId);
           
           return { 
             success: true, 
@@ -61,34 +59,51 @@ class FirebaseEmailService {
     }
   }
 
-  async scheduleVerificationCheck(email, firebaseUid) {
-    console.log('⏰ Scheduling verification check for:', email);
+  async startVerificationPolling(email, firebaseUid, userId) {
+    console.log('🔄 Starting verification polling for:', email);
     
-    try {
-      // Check if email is verified in Firebase
-      const isVerified = await this.checkFirebaseVerification(firebaseUid);
+    let attempts = 0;
+    const maxAttempts = 30; // 5 minutes total (10s * 30)
+    
+    const checkInterval = setInterval(async () => {
+      attempts++;
       
-      if (isVerified) {
-        console.log('✅ Email verified in Firebase, updating database for:', email);
+      try {
+        console.log(`🔍 Verification check attempt ${attempts} for:`, email);
         
-        // Update database
-        await pool.query(
-          'UPDATE users SET email_verified = true WHERE firebase_uid = $1',
-          [firebaseUid]
-        );
+        // Check if email is verified in Firebase
+        const isVerified = await this.checkFirebaseVerification(firebaseUid);
         
-        console.log('✅ Database updated for:', email);
-      } else {
-        console.log('❌ Email not verified yet in Firebase for:', email);
+        if (isVerified) {
+          console.log('✅ Email verified in Firebase, updating database for:', email);
+          
+          // Update database - CRITICAL FIX
+          await pool.query(
+            'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1',
+            [firebaseUid]
+          );
+          
+          console.log('✅ Database updated for:', email);
+          clearInterval(checkInterval);
+          return;
+        } else {
+          console.log('⏳ Email not verified yet in Firebase for:', email);
+        }
         
-        // Schedule another check in 30 seconds
-        setTimeout(() => {
-          this.scheduleVerificationCheck(email, firebaseUid);
-        }, 30000);
+        // Stop after max attempts
+        if (attempts >= maxAttempts) {
+          console.log('⏰ Verification polling timeout for:', email);
+          clearInterval(checkInterval);
+        }
+      } catch (error) {
+        console.log('⚠️ Verification check failed:', error.message);
+        
+        // Stop on error
+        if (attempts >= maxAttempts) {
+          clearInterval(checkInterval);
+        }
       }
-    } catch (error) {
-      console.log('⚠️ Verification check failed:', error.message);
-    }
+    }, 10000); // Check every 10 seconds instead of 30
   }
 
   async checkFirebaseVerification(firebaseUid) {
@@ -128,18 +143,18 @@ class FirebaseEmailService {
               console.log('🔍 Firebase verification check for', user.email, ':', isVerified);
               resolve(isVerified);
             } else {
-              console.log('❌ Firebase verification check failed');
+              console.log('❌ Firebase verification check failed - no users found');
               resolve(false);
             }
           } catch (error) {
-            console.log('❌ JSON parse error in verification check');
+            console.log('❌ JSON parse error in verification check:', error.message);
             resolve(false);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Verification check network error');
+        console.log('❌ Verification check network error:', error.message);
         resolve(false);
       });
 
@@ -157,6 +172,7 @@ class FirebaseEmailService {
       console.log('✅ Firebase UID stored for user:', userId);
     } catch (error) {
       console.log('❌ Error storing Firebase UID:', error.message);
+      throw error;
     }
   }
 
@@ -198,19 +214,19 @@ class FirebaseEmailService {
                 console.log('🔄 User exists, signing in...');
                 this.signInFirebaseUser(email, password).then(resolve).catch(reject);
               } else {
-                resolve(null);
+                reject(new Error(parsedData.error?.message || 'Firebase user creation failed'));
               }
             }
           } catch (error) {
-            console.log('❌ JSON parse error');
-            resolve(null);
+            console.log('❌ JSON parse error in user creation');
+            reject(error);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error');
-        resolve(null);
+        console.log('❌ Network error in user creation');
+        reject(error);
       });
 
       req.write(userData);
@@ -250,19 +266,19 @@ class FirebaseEmailService {
               console.log('✅ Firebase user signed in:', email);
               resolve(parsedData);
             } else {
-              console.log('❌ Firebase sign in failed');
-              resolve(null);
+              console.log('❌ Firebase sign in failed:', parsedData.error?.message);
+              reject(new Error(parsedData.error?.message || 'Firebase sign in failed'));
             }
           } catch (error) {
-            console.log('❌ JSON parse error');
-            resolve(null);
+            console.log('❌ JSON parse error in sign in');
+            reject(error);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error');
-        resolve(null);
+        console.log('❌ Network error in sign in');
+        reject(error);
       });
 
       req.write(userData);
@@ -301,24 +317,48 @@ class FirebaseEmailService {
               console.log('✅ Email verification sent to:', email);
               resolve(parsedData);
             } else {
-              console.log('❌ Email verification failed');
-              resolve(null);
+              console.log('❌ Email verification failed:', parsedData.error?.message);
+              reject(new Error(parsedData.error?.message || 'Email verification failed'));
             }
           } catch (error) {
-            console.log('❌ JSON parse error');
-            resolve(null);
+            console.log('❌ JSON parse error in email sending');
+            reject(error);
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error');
-        resolve(null);
+        console.log('❌ Network error in email sending');
+        reject(error);
       });
 
       req.write(emailData);
       req.end();
     });
+  }
+
+  // NEW METHOD: Force verify by Firebase UID
+  async forceVerifyByFirebaseUid(firebaseUid) {
+    try {
+      console.log('🔧 Force verifying Firebase UID:', firebaseUid);
+      
+      const isVerified = await this.checkFirebaseVerification(firebaseUid);
+      
+      if (isVerified) {
+        await pool.query(
+          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1',
+          [firebaseUid]
+        );
+        console.log('✅ Force verification successful for Firebase UID:', firebaseUid);
+        return { success: true, message: 'User verified successfully' };
+      } else {
+        console.log('❌ User not verified in Firebase:', firebaseUid);
+        return { success: false, message: 'User not verified in Firebase' };
+      }
+    } catch (error) {
+      console.log('❌ Force verification error:', error.message);
+      return { success: false, error: error.message };
+    }
   }
 }
 
