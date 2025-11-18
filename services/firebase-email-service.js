@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - FIXED VERSION WITH EMAIL SENDING
+// services/firebase-email-service.js - FIXED VERSION WITH IMPROVED SYNC
 import https from 'https';
 import pool from '../db.js';
 
@@ -80,6 +80,61 @@ class FirebaseEmailService {
         error: error.message,
         message: 'Use /api/auth/super-verify to verify manually'
       };
+    }
+  }
+
+  // NEW METHOD: Sync verification status immediately
+  async syncVerificationStatus(email) {
+    try {
+      console.log('🔄 Syncing verification status for:', email);
+      
+      // Get user from database
+      const userResult = await pool.query(
+        'SELECT id, firebase_uid FROM users WHERE email = $1',
+        [email]
+      );
+
+      if (userResult.rows.length === 0) {
+        return { success: false, message: 'User not found' };
+      }
+
+      const user = userResult.rows[0];
+      
+      if (!user.firebase_uid) {
+        return { success: false, message: 'No Firebase UID found' };
+      }
+
+      // Check Firebase verification status
+      const isVerified = await this.checkFirebaseVerification(user.firebase_uid);
+      
+      if (isVerified) {
+        // Update database
+        const updateResult = await pool.query(
+          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+          [user.id]
+        );
+        
+        console.log('✅ Database synced with Firebase verification for:', email);
+        
+        // Send success notification
+        await this.sendVerificationSuccessNotification(email);
+        
+        return { 
+          success: true, 
+          message: 'Verification status synced',
+          verified: true,
+          user: updateResult.rows[0]
+        };
+      } else {
+        return { 
+          success: true, 
+          message: 'Email not verified in Firebase yet',
+          verified: false 
+        };
+      }
+    } catch (error) {
+      console.error('❌ Sync verification error:', error.message);
+      return { success: false, error: error.message };
     }
   }
 
@@ -365,7 +420,7 @@ class FirebaseEmailService {
   }
 
   async startVerificationPolling(email, firebaseUid, userId) {
-    console.log('🔄 Starting verification polling for:', email);
+    console.log('🔄 Starting ENHANCED verification polling for:', email);
     
     // Clear any existing polling for this user
     if (this.pollingIntervals.has(email)) {
@@ -373,7 +428,7 @@ class FirebaseEmailService {
     }
     
     let attempts = 0;
-    const maxAttempts = 60; // 10 minutes total (10s * 60)
+    const maxAttempts = 120; // 20 minutes total (10s * 120)
     
     const intervalId = setInterval(async () => {
       attempts++;
@@ -396,16 +451,8 @@ class FirebaseEmailService {
           if (updateResult.rows.length > 0) {
             console.log('✅ Database updated successfully for:', email);
             
-            // Log the successful verification
-            try {
-              await pool.query(
-                `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
-                 VALUES ($1, $2, $3, $4, NOW())`,
-                ['EMAIL_VERIFIED', `User verified email: ${email}`, 1, 'System']
-              );
-            } catch (logError) {
-              console.log('⚠️ Failed to log activity:', logError.message);
-            }
+            // Send success notification
+            await this.sendVerificationSuccessNotification(email);
           } else {
             console.log('❌ Database update failed for:', email);
           }
@@ -417,9 +464,13 @@ class FirebaseEmailService {
           console.log('⏳ Email not verified yet in Firebase for:', email);
         }
         
-        // Stop after max attempts (10 minutes)
+        // Stop after max attempts (20 minutes)
         if (attempts >= maxAttempts) {
           console.log('⏰ Verification polling timeout for:', email);
+          
+          // Send timeout notification
+          await this.sendVerificationTimeoutNotification(email);
+          
           clearInterval(intervalId);
           this.pollingIntervals.delete(email);
         }
@@ -633,6 +684,37 @@ class FirebaseEmailService {
     } catch (error) {
       console.log('❌ Manual email trigger error:', error.message);
       return { success: false, error: error.message };
+    }
+  }
+
+  // NEW HELPER METHODS
+  async sendVerificationSuccessNotification(email) {
+    try {
+      console.log('✅ Verification success notification for:', email);
+      
+      // Log activity
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['EMAIL_VERIFIED', `User completed email verification: ${email}`, 1, 'System']
+      );
+    } catch (error) {
+      console.log('⚠️ Failed to send success notification:', error.message);
+    }
+  }
+
+  async sendVerificationTimeoutNotification(email) {
+    try {
+      console.log('⏰ Verification timeout notification for:', email);
+      
+      // Log activity
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['VERIFICATION_TIMEOUT', `Email verification timeout for: ${email}`, 1, 'System']
+      );
+    } catch (error) {
+      console.log('⚠️ Failed to send timeout notification:', error.message);
     }
   }
 
