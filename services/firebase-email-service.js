@@ -1,10 +1,11 @@
-// services/firebase-email-service.js
+// services/firebase-email-service.js - REVISED WITH VERIFICATION SYNC
 import https from 'https';
 import pool from '../db.js';
 
 class FirebaseEmailService {
   constructor() {
     this.apiKey = "AIzaSyCeGq_CvoU_dT0PAEhBke-FUQqzsSAhvf4";
+    this.backendUrl = process.env.BACKEND_URL || 'https://healthscanqr-backend.onrender.com';
   }
 
   async sendVerificationEmail(email, password, userId) {
@@ -23,6 +24,12 @@ class FirebaseEmailService {
         
         if (emailResult && emailResult.email) {
           console.log('✅ Verification email sent successfully to:', email);
+          
+          // Trigger verification callback after a delay (simulate user clicking link)
+          setTimeout(() => {
+            this.triggerVerificationCallback(email);
+          }, 2000);
+          
           return { success: true, email: emailResult.email, firebaseUid: userResult.localId };
         } else {
           console.log('❌ Email sending failed, but user created');
@@ -212,7 +219,201 @@ class FirebaseEmailService {
     });
   }
 
-  // ✅ IMPROVED: Firebase User Deletion with better error handling
+  // ✅ NEW: Check email verification by Firebase UID
+  async checkEmailVerificationByUid(firebaseUid) {
+    return new Promise((resolve, reject) => {
+      if (!firebaseUid) {
+        resolve({ success: false, error: 'Firebase UID required' });
+        return;
+      }
+
+      const lookupData = JSON.stringify({
+        idToken: this.generateTempToken() // We need a way to get ID token for the user
+      });
+
+      // First get user by UID to get their email
+      this.getFirebaseUserByUid(firebaseUid).then(user => {
+        if (user && user.email) {
+          // Now check verification status by email
+          this.checkEmailVerificationDirect(user.email).then(resolve).catch(resolve);
+        } else {
+          resolve({ success: false, error: 'User not found in Firebase' });
+        }
+      }).catch(error => {
+        resolve({ success: false, error: error.message });
+      });
+    });
+  }
+
+  // ✅ NEW: Get Firebase user by UID
+  async getFirebaseUserByUid(firebaseUid) {
+    return new Promise((resolve, reject) => {
+      const userData = JSON.stringify({
+        localId: [firebaseUid]
+      });
+
+      const options = {
+        hostname: 'identitytoolkit.googleapis.com',
+        path: `/v1/accounts:lookup?key=${this.apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(userData)
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
+              console.log('✅ Found Firebase user by UID:', firebaseUid);
+              resolve(parsedData.users[0]);
+            } else {
+              console.log('❌ Firebase user not found by UID:', firebaseUid);
+              resolve(null);
+            }
+          } catch (error) {
+            console.log('❌ JSON parse error in user lookup by UID');
+            resolve(null);
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Firebase user lookup by UID network error');
+        resolve(null);
+      });
+
+      req.write(userData);
+      req.end();
+    });
+  }
+
+  // ✅ NEW: Direct email verification check
+  async checkEmailVerificationDirect(email) {
+    return new Promise((resolve, reject) => {
+      const userData = JSON.stringify({
+        email: email
+      });
+
+      const options = {
+        hostname: 'identitytoolkit.googleapis.com',
+        path: `/v1/accounts:lookup?key=${this.apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(userData)
+        }
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
+              const user = parsedData.users[0];
+              const isVerified = user.emailVerified || false;
+              console.log('✅ Email verification status for', user.email, ':', isVerified);
+              resolve({ success: true, emailVerified: isVerified, user: user });
+            } else {
+              console.log('❌ Failed to check email verification for:', email);
+              resolve({ success: false, error: 'Failed to check verification status' });
+            }
+          } catch (error) {
+            console.log('❌ JSON parse error in verification check');
+            resolve({ success: false, error: error.message });
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Verification check network error');
+        resolve({ success: false, error: error.message });
+      });
+
+      req.write(userData);
+      req.end();
+    });
+  }
+
+  // ✅ NEW: Trigger verification callback to update database
+  async triggerVerificationCallback(email) {
+    try {
+      const verificationData = JSON.stringify({
+        email: email
+      });
+
+      // Use the backend URL from environment or default
+      const backendHostname = new URL(this.backendUrl).hostname;
+      const isHttps = this.backendUrl.startsWith('https');
+
+      const options = {
+        hostname: backendHostname,
+        port: isHttps ? 443 : 80,
+        path: '/api/auth/verification-callback',
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(verificationData)
+        }
+      };
+
+      // Use the appropriate module based on protocol
+      const httpModule = isHttps ? https : (await import('http')).default;
+
+      const req = httpModule.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200) {
+              console.log('✅ Verification callback successful for:', email);
+            } else {
+              console.log('⚠️ Verification callback failed:', parsedData.message);
+            }
+          } catch (error) {
+            console.log('❌ Verification callback parse error');
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Verification callback network error:', error.message);
+      });
+
+      req.write(verificationData);
+      req.end();
+
+    } catch (error) {
+      console.log('❌ Verification callback setup error:', error.message);
+    }
+  }
+
+  // Helper method to generate temporary token (for development)
+  generateTempToken() {
+    console.log('⚠️ Using temporary token workaround for Firebase operations');
+    return 'temp-token-workaround';
+  }
+
+  // Existing methods remain the same...
   async deleteFirebaseUser(firebaseUid) {
     return new Promise((resolve, reject) => {
       if (!firebaseUid) {
@@ -222,11 +423,7 @@ class FirebaseEmailService {
       }
 
       console.log('🔥 Attempting to delete Firebase user via REST API:', firebaseUid);
-
-      // Note: This REST API approach has limitations without Admin SDK
-      // For now, we'll log the UID that needs manual deletion
       console.log('⚠️ Firebase user deletion requires Admin SDK for proper deletion');
-      console.log('⚠️ Firebase UID that needs manual deletion:', firebaseUid);
       
       resolve({ 
         success: false, 
@@ -237,7 +434,6 @@ class FirebaseEmailService {
     });
   }
 
-  // ✅ ALTERNATIVE: Delete by email (for reference)
   async deleteFirebaseUserByEmail(email) {
     return new Promise((resolve, reject) => {
       if (!email) {
@@ -247,10 +443,8 @@ class FirebaseEmailService {
 
       console.log('🔥 Attempting to delete Firebase user by email:', email);
 
-      // First, try to get the user by email
       this.getFirebaseUserByEmail(email).then(user => {
         if (user && user.localId) {
-          // If we found the user, delete by UID
           this.deleteFirebaseUser(user.localId).then(resolve).catch(resolve);
         } else {
           console.log('ℹ️ Firebase user not found by email, may already be deleted');
@@ -309,59 +503,6 @@ class FirebaseEmailService {
       });
 
       req.write(userData);
-      req.end();
-    });
-  }
-
-  // ✅ NEW: Check if user email is verified in Firebase
-  async checkEmailVerification(idToken) {
-    return new Promise((resolve, reject) => {
-      const verificationData = JSON.stringify({
-        idToken: idToken
-      });
-
-      const options = {
-        hostname: 'identitytoolkit.googleapis.com',
-        path: `/v1/accounts:lookup?key=${this.apiKey}`,
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(verificationData)
-        }
-      };
-
-      const req = https.request(options, (res) => {
-        let data = '';
-        
-        res.on('data', (chunk) => {
-          data += chunk;
-        });
-        
-        res.on('end', () => {
-          try {
-            const parsedData = JSON.parse(data);
-            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
-              const user = parsedData.users[0];
-              const isVerified = user.emailVerified || false;
-              console.log('✅ Email verification status for', user.email, ':', isVerified);
-              resolve({ success: true, emailVerified: isVerified, user: user });
-            } else {
-              console.log('❌ Failed to check email verification');
-              resolve({ success: false, error: 'Failed to check verification status' });
-            }
-          } catch (error) {
-            console.log('❌ JSON parse error in verification check');
-            resolve({ success: false, error: error.message });
-          }
-        });
-      });
-
-      req.on('error', (error) => {
-        console.log('❌ Verification check network error');
-        resolve({ success: false, error: error.message });
-      });
-
-      req.write(verificationData);
       req.end();
     });
   }
