@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - FIXED VERSION WITH IMPROVED SYNC
+// services/firebase-email-service.js - FIXED VERSION WITH EMAIL SENDING
 import https from 'https';
 import pool from '../db.js';
 
@@ -25,7 +25,7 @@ class FirebaseEmailService {
         
         // Step 3: Send verification email
         console.log('🔄 Step 3: Sending verification email...');
-        const emailResult = await this.sendVerificationToUser(userResult.idToken, email);
+        const emailResult = await this.sendVerificationToUser(userResult.idToken);
         
         if (emailResult && emailResult.email) {
           console.log('✅ Verification email sent to:', email);
@@ -147,7 +147,7 @@ class FirebaseEmailService {
       const signInResult = await this.signInWithCustomToken(firebaseUid);
       if (signInResult && signInResult.idToken) {
         // Try sending verification with fresh token
-        const emailResult = await this.sendVerificationToUser(signInResult.idToken, email);
+        const emailResult = await this.sendVerificationToUser(signInResult.idToken);
         return { success: !!emailResult };
       }
       return { success: false };
@@ -300,9 +300,10 @@ class FirebaseEmailService {
     });
   }
 
-  async sendVerificationToUser(idToken, email) {
+  // FIXED METHOD: Removed the extra email parameter
+  async sendVerificationToUser(idToken) {
     return new Promise((resolve, reject) => {
-      console.log('📨 Sending verification email to:', email);
+      console.log('📨 Sending verification email with ID token...');
       
       if (!idToken) {
         console.log('❌ No ID token provided for email verification');
@@ -317,8 +318,7 @@ class FirebaseEmailService {
 
       console.log('📤 Email verification request data:', {
         requestType: 'VERIFY_EMAIL',
-        idTokenLength: idToken.length,
-        email: email
+        idTokenLength: idToken.length
       });
 
       const options = {
@@ -345,7 +345,7 @@ class FirebaseEmailService {
           try {
             const parsedData = JSON.parse(data);
             if (res.statusCode === 200) {
-              console.log('✅ Email verification sent SUCCESSFULLY to:', email);
+              console.log('✅ Email verification sent SUCCESSFULLY to:', parsedData.email);
               console.log('📧 Response details:', {
                 email: parsedData.email,
                 requestType: parsedData.requestType
@@ -668,7 +668,7 @@ class FirebaseEmailService {
 
       if (signInResult && signInResult.idToken) {
         // Send verification email with fresh token
-        const emailResult = await this.sendVerificationToUser(signInResult.idToken, email);
+        const emailResult = await this.sendVerificationToUser(signInResult.idToken);
         
         if (emailResult) {
           console.log('✅ Manual email verification triggered for:', email);
