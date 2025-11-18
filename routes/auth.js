@@ -1,4 +1,4 @@
-// routes/auth.js - SIMPLE WORKING VERSION
+// routes/auth.js - COMPLETE WORKING VERSION WITH EMAIL + INSTANT VERIFICATION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -9,7 +9,7 @@ const router = express.Router();
 
 // ==================== INSTANT VERIFICATION ENDPOINTS ====================
 
-// ✅ SUPER VERIFY - THIS WILL DEFINITELY WORK
+// ✅ SUPER VERIFY - INSTANT DATABASE UPDATE
 router.post('/super-verify', async (req, res) => {
   try {
     const { email } = req.body;
@@ -23,7 +23,6 @@ router.post('/super-verify', async (req, res) => {
 
     console.log('🎯 SUPER VERIFICATION requested for:', email);
 
-    // Use the new service that directly updates the database
     const result = await emailVerificationService.verifyEmailInstantly(email);
 
     if (result.success) {
@@ -146,12 +145,12 @@ router.get('/all-users', async (req, res) => {
   }
 });
 
-// ==================== AUTH ENDPOINTS ====================
+// ==================== REGISTRATION WITH EMAIL SENDING ====================
 
-// REGISTER - SIMPLE VERSION
+// REGISTER - WITH EMAIL VERIFICATION OPTION
 router.post('/register', async (req, res) => {
   try {
-    const { full_name, email, username, password } = req.body;
+    const { full_name, email, username, password, skipEmail = false } = req.body;
 
     if (!full_name || !email || !username || !password) {
       return res.status(400).json({ 
@@ -175,23 +174,70 @@ router.post('/register', async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    // Insert user with email_verified = false
+    // Insert user
     const result = await pool.query(
       `INSERT INTO users (full_name, email, username, password, email_verified, created_at) 
        VALUES ($1, $2, $3, $4, $5, NOW()) 
        RETURNING id, full_name, email, username, email_verified, created_at`,
-      [full_name, email, username, hashedPassword, false]
+      [full_name, email, username, hashedPassword, false] // Start as not verified
     );
 
     const newUser = result.rows[0];
 
-    res.status(201).json({
+    let emailResult = { success: false, message: 'Email not sent' };
+
+    // Send verification email unless skipped
+    if (!skipEmail) {
+      try {
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+        emailResult = await firebaseEmailService.sendVerificationEmail(email, password, newUser.id);
+        
+        if (emailResult.success) {
+          console.log('✅ Verification email sent to:', email);
+        } else {
+          console.log('⚠️ Email sending failed:', emailResult.error);
+        }
+      } catch (emailError) {
+        console.log('⚠️ Email service error:', emailError.message);
+        emailResult = { success: false, error: emailError.message };
+      }
+    }
+
+    // Auto-verify if email sending was skipped or failed
+    let autoVerified = false;
+    if (skipEmail || !emailResult.success) {
+      const verifyResult = await emailVerificationService.verifyEmailInstantly(email);
+      autoVerified = verifyResult.success;
+      if (autoVerified) {
+        newUser.email_verified = true;
+        console.log('✅ Auto-verified user:', email);
+      }
+    }
+
+    const response = {
       success: true,
-      message: '✅ Registration successful! Use /api/auth/super-verify to verify instantly.',
-      user: newUser,
-      verificationInstruction: 'POST /api/auth/super-verify with: { "email": "' + email + '" }',
-      testLogin: 'After verification, login with POST /api/auth/login'
-    });
+      message: '✅ Registration successful!',
+      user: newUser
+    };
+
+    if (emailResult.success) {
+      response.emailStatus = 'Verification email sent - check your inbox';
+      response.verificationInstruction = 'Click the link in the email OR use POST /api/auth/super-verify';
+    } else if (autoVerified) {
+      response.emailStatus = 'Auto-verified - ready to login!';
+      response.instruction = 'You can login immediately';
+    } else {
+      response.emailStatus = 'Email failed - verify manually';
+      response.verificationInstruction = 'Use POST /api/auth/super-verify with: { "email": "' + email + '" }';
+    }
+
+    response.testEndpoints = {
+      verify: 'POST /api/auth/super-verify',
+      checkStatus: 'GET /api/auth/verification-status/' + email,
+      login: 'POST /api/auth/login'
+    };
+
+    res.status(201).json(response);
 
   } catch (err) {
     console.error('❌ Registration error:', err.message);
@@ -202,7 +248,80 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// LOGIN - SIMPLE VERIFICATION CHECK
+// ✅ RESEND VERIFICATION EMAIL
+router.post('/resend-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    // Check if user exists
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // If already verified
+    if (user.email_verified) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is already verified' 
+      });
+    }
+
+    let emailResult = { success: false, message: 'Email not sent' };
+
+    try {
+      const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+      emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-resend-' + Date.now(), user.id);
+      
+      if (emailResult.success) {
+        res.json({ 
+          success: true,
+          message: '✅ Verification email sent successfully. Please check your inbox and spam folder.' 
+        });
+      } else {
+        res.status(500).json({ 
+          success: false,
+          message: 'Failed to send verification email. Please try again or use instant verification.',
+          instantVerify: 'POST /api/auth/super-verify with { "email": "' + email + '" }'
+        });
+      }
+    } catch (emailError) {
+      console.log('⚠️ Email service error:', emailError.message);
+      res.status(500).json({ 
+        success: false,
+        message: 'Email service unavailable. Use instant verification instead.',
+        instantVerify: 'POST /api/auth/super-verify with { "email": "' + email + '" }'
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Resend verification error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error' 
+    });
+  }
+});
+
+// ==================== LOGIN ====================
+
+// LOGIN - WITH VERIFICATION CHECK
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -236,13 +355,18 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // SIMPLE VERIFICATION CHECK
+    // VERIFICATION CHECK
     if (!user.email_verified) {
       return res.status(403).json({ 
         success: false,
-        message: 'Email not verified. Use POST /api/auth/super-verify to verify instantly.',
+        message: 'Email not verified.',
         email: user.email,
-        fixInstruction: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }'
+        solutions: [
+          'Check your email for verification link',
+          'Use POST /api/auth/resend-verification to resend email',
+          'Use POST /api/auth/super-verify for instant verification'
+        ],
+        instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }'
       });
     }
 
