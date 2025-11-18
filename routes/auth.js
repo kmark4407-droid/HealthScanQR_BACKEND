@@ -1,11 +1,30 @@
-// routes/auth.js - COMPLETE REVISED VERSION WITH FIREBASE ADMIN SDK
+// routes/auth.js - COMPLETE REVISED VERSION WITH PROPER USER DELETION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
-import { deleteFirebaseUser } from '../services/firebase-admin-service.js';
 
 const router = express.Router();
+
+// Fallback function if Firebase Admin is not available
+const getFirebaseAdmin = async () => {
+  try {
+    const { deleteFirebaseUser } = await import('../services/firebase-admin-service.js');
+    return { deleteFirebaseUser };
+  } catch (error) {
+    console.log('⚠️ Firebase Admin not available, using fallback');
+    return {
+      deleteFirebaseUser: async (firebaseUid) => {
+        console.log('⚠️ Firebase Admin fallback - would delete:', firebaseUid);
+        return { 
+          success: false, 
+          error: 'Firebase Admin not configured',
+          message: 'Firebase account needs manual deletion' 
+        };
+      }
+    };
+  }
+};
 
 // REGISTER - WITH EMAIL VERIFICATION
 router.post('/register', async (req, res) => {
@@ -251,8 +270,10 @@ router.post('/resend-verification', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase) - UPDATED WITH ADMIN SDK
+// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase) - FIXED VERSION
 router.delete('/user', async (req, res) => {
+  const client = await pool.connect();
+  
   try {
     const { email, userId } = req.body;
 
@@ -281,41 +302,46 @@ router.delete('/user', async (req, res) => {
       return res.status(404).json({ message: 'User not found' });
     }
 
-    // Step 1: Delete from Firebase Auth using Admin SDK (if Firebase UID exists)
-    if (user.firebase_uid) {
-      console.log('🗑️ Deleting Firebase user with Admin SDK:', user.firebase_uid);
-      const firebaseResult = await deleteFirebaseUser(user.firebase_uid);
-      
-      if (firebaseResult.success) {
-        console.log('✅ Firebase user deleted successfully with Admin SDK');
-      } else {
-        console.log('⚠️ Firebase user deletion may need manual cleanup:', firebaseResult.error);
-      }
-    } else {
-      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
-    }
+    console.log(`🗑️ Starting deletion process for user: ${user.email} (ID: ${user.id}, Firebase UID: ${user.firebase_uid})`);
 
-    // Step 2: Delete user's medical records first (due to foreign key constraint)
+    await client.query('BEGIN');
+
+    // Step 1: Delete user's medical records first
     try {
-      await pool.query(
-        'DELETE FROM medical_info WHERE user_id = $1',
-        [user.id]
-      );
-      console.log('✅ Medical records deleted for user:', user.id);
+      const medicalDelete = await client.query('DELETE FROM medical_info WHERE user_id = $1', [user.id]);
+      console.log(`✅ Medical records deleted for user: ${user.id} (${medicalDelete.rowCount} records)`);
     } catch (medicalError) {
       console.log('⚠️ No medical records to delete or error:', medicalError.message);
     }
 
-    // Step 3: Delete user from Neon DB
-    await pool.query(
-      'DELETE FROM users WHERE id = $1',
-      [user.id]
-    );
+    // Step 2: Delete from Firebase Auth
+    let firebaseResult = { success: false, error: 'Not attempted' };
+    if (user.firebase_uid) {
+      console.log('🔥 Attempting Firebase deletion for UID:', user.firebase_uid);
+      const firebaseAdmin = await getFirebaseAdmin();
+      firebaseResult = await firebaseAdmin.deleteFirebaseUser(user.firebase_uid);
+      console.log('🔥 Firebase deletion result:', firebaseResult.success, firebaseResult.message);
+    } else {
+      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
+      firebaseResult = { success: true, message: 'No Firebase UID to delete' };
+    }
 
+    // Step 3: Delete user from Neon DB
+    const userDelete = await client.query('DELETE FROM users WHERE id = $1', [user.id]);
+    
+    if (userDelete.rowCount === 0) {
+      throw new Error('User not found in database during deletion');
+    }
+    
     console.log('✅ User deleted from Neon DB:', user.email);
 
+    await client.query('COMMIT');
+
     res.json({
-      message: '✅ User account deleted successfully from both database and authentication system.',
+      message: '✅ User account deleted successfully!',
+      database_deleted: true,
+      firebase_deleted: firebaseResult.success,
+      firebase_message: firebaseResult.message,
       deletedUser: {
         id: user.id,
         email: user.email,
@@ -324,19 +350,28 @@ router.delete('/user', async (req, res) => {
     });
 
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('❌ User deletion error:', err.message);
-    res.status(500).json({ message: 'Server error during user deletion' });
+    res.status(500).json({ 
+      message: 'Server error during user deletion: ' + err.message 
+    });
+  } finally {
+    client.release();
   }
 });
 
-// ✅ ADMIN - DELETE USER BY ID - UPDATED WITH ADMIN SDK
+// ✅ ADMIN - DELETE USER BY ID - FIXED VERSION
 router.delete('/admin/user/:userId', async (req, res) => {
+  const client = await pool.connect();
+  
   try {
     const userId = parseInt(req.params.userId);
     
     if (!userId || isNaN(userId)) {
       return res.status(400).json({ message: 'Valid user ID is required.' });
     }
+
+    console.log(`🗑️ Admin deletion request for user ID: ${userId}`);
 
     // Get user data
     const userResult = await pool.query(
@@ -349,40 +384,46 @@ router.delete('/admin/user/:userId', async (req, res) => {
     }
 
     const user = userResult.rows[0];
+    console.log(`🗑️ Found user to delete: ${user.email} (Firebase UID: ${user.firebase_uid})`);
 
-    // Delete from Firebase Auth using Admin SDK (if Firebase UID exists)
-    if (user.firebase_uid) {
-      console.log('🗑️ Admin: Deleting Firebase user with Admin SDK:', user.firebase_uid);
-      const firebaseResult = await deleteFirebaseUser(user.firebase_uid);
-      
-      if (firebaseResult.success) {
-        console.log('✅ Firebase user deleted successfully with Admin SDK');
-      } else {
-        console.log('⚠️ Firebase deletion may need manual cleanup:', firebaseResult.error);
-      }
-    }
+    await client.query('BEGIN');
 
     // Delete user's medical records first
     try {
-      await pool.query(
-        'DELETE FROM medical_info WHERE user_id = $1',
-        [userId]
-      );
-      console.log('✅ Medical records deleted for user:', userId);
+      const medicalDelete = await client.query('DELETE FROM medical_info WHERE user_id = $1', [userId]);
+      console.log(`✅ Medical records deleted for user: ${userId} (${medicalDelete.rowCount} records)`);
     } catch (medicalError) {
       console.log('⚠️ No medical records to delete:', medicalError.message);
     }
 
-    // Delete user from Neon DB
-    await pool.query(
-      'DELETE FROM users WHERE id = $1',
-      [userId]
-    );
+    // Delete from Firebase Auth
+    let firebaseResult = { success: false, error: 'Not attempted' };
+    if (user.firebase_uid) {
+      console.log('🔥 Admin: Deleting Firebase user:', user.firebase_uid);
+      const firebaseAdmin = await getFirebaseAdmin();
+      firebaseResult = await firebaseAdmin.deleteFirebaseUser(user.firebase_uid);
+      console.log('🔥 Firebase deletion result:', firebaseResult.success, firebaseResult.message);
+    } else {
+      console.log('ℹ️ No Firebase UID found, skipping Firebase deletion');
+      firebaseResult = { success: true, message: 'No Firebase UID to delete' };
+    }
 
-    console.log('✅ User deleted by admin:', user.email);
+    // Delete user from Neon DB
+    const userDelete = await client.query('DELETE FROM users WHERE id = $1', [userId]);
+    
+    if (userDelete.rowCount === 0) {
+      throw new Error('User not found in database during deletion');
+    }
+    
+    console.log('✅ User deleted by admin from Neon DB:', user.email);
+
+    await client.query('COMMIT');
 
     res.json({
-      message: '✅ User account deleted successfully.',
+      message: '✅ User account deleted successfully!',
+      database_deleted: true,
+      firebase_deleted: firebaseResult.success,
+      firebase_message: firebaseResult.message,
       deletedUser: {
         id: user.id,
         email: user.email,
@@ -391,8 +432,13 @@ router.delete('/admin/user/:userId', async (req, res) => {
     });
 
   } catch (err) {
+    await client.query('ROLLBACK');
     console.error('❌ Admin user deletion error:', err.message);
-    res.status(500).json({ message: 'Server error during user deletion' });
+    res.status(500).json({ 
+      message: 'Server error during user deletion: ' + err.message 
+    });
+  } finally {
+    client.release();
   }
 });
 
