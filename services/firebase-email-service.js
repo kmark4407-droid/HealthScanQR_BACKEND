@@ -1,10 +1,11 @@
-// services/firebase-email-service.js - FIXED VERSION
+// services/firebase-email-service.js - FIXED VERSION WITH PROPER POLLING
 import https from 'https';
 import pool from '../db.js';
 
 class FirebaseEmailService {
   constructor() {
     this.apiKey = "AIzaSyCeGq_CvoU_dT0PAEhBke-FUQqzsSAhvf4";
+    this.pollingIntervals = new Map(); // Track polling per user
   }
 
   async sendVerificationEmail(email, password, userId) {
@@ -24,21 +25,21 @@ class FirebaseEmailService {
         if (emailResult && emailResult.email) {
           console.log('✅ Verification email sent to:', email);
           
-          // Start verification polling immediately and more frequently
+          // Start verification polling immediately
           this.startVerificationPolling(email, userResult.localId, userId);
           
           return { 
             success: true, 
             email: emailResult.email, 
             firebaseUid: userResult.localId,
-            message: 'Check your email and use /api/auth/force-verify if needed'
+            message: 'Check your email and click the verification link'
           };
         } else {
           console.log('❌ Email sending failed');
           return { 
             success: false, 
             error: 'Email sending failed',
-            message: 'Use /api/auth/force-verify to verify manually'
+            message: 'Use /api/auth/super-verify to verify manually'
           };
         }
       } else {
@@ -46,7 +47,7 @@ class FirebaseEmailService {
         return { 
           success: false, 
           error: 'User creation failed',
-          message: 'Use /api/auth/force-verify to verify manually'
+          message: 'Use /api/auth/super-verify to verify manually'
         };
       }
     } catch (error) {
@@ -54,7 +55,7 @@ class FirebaseEmailService {
       return { 
         success: false, 
         error: error.message,
-        message: 'Use /api/auth/force-verify to verify manually'
+        message: 'Use /api/auth/super-verify to verify manually'
       };
     }
   }
@@ -62,10 +63,15 @@ class FirebaseEmailService {
   async startVerificationPolling(email, firebaseUid, userId) {
     console.log('🔄 Starting verification polling for:', email);
     
-    let attempts = 0;
-    const maxAttempts = 30; // 5 minutes total (10s * 30)
+    // Clear any existing polling for this user
+    if (this.pollingIntervals.has(email)) {
+      clearInterval(this.pollingIntervals.get(email));
+    }
     
-    const checkInterval = setInterval(async () => {
+    let attempts = 0;
+    const maxAttempts = 60; // 10 minutes total (10s * 60)
+    
+    const intervalId = setInterval(async () => {
       attempts++;
       
       try {
@@ -75,40 +81,66 @@ class FirebaseEmailService {
         const isVerified = await this.checkFirebaseVerification(firebaseUid);
         
         if (isVerified) {
-          console.log('✅ Email verified in Firebase, updating database for:', email);
+          console.log('🎉 Email verified in Firebase! Updating database for:', email);
           
-          // Update database - CRITICAL FIX
-          await pool.query(
-            'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1',
+          // Update database - THIS IS THE CRITICAL PART
+          const updateResult = await pool.query(
+            'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1 RETURNING *',
             [firebaseUid]
           );
           
-          console.log('✅ Database updated for:', email);
-          clearInterval(checkInterval);
+          if (updateResult.rows.length > 0) {
+            console.log('✅ Database updated successfully for:', email);
+            
+            // Log the successful verification
+            await pool.query(
+              `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+               VALUES ($1, $2, $3, $4, NOW())`,
+              ['EMAIL_VERIFIED', `User verified email: ${email}`, 1, 'System']
+            );
+          } else {
+            console.log('❌ Database update failed for:', email);
+          }
+          
+          clearInterval(intervalId);
+          this.pollingIntervals.delete(email);
           return;
         } else {
           console.log('⏳ Email not verified yet in Firebase for:', email);
         }
         
-        // Stop after max attempts
+        // Stop after max attempts (10 minutes)
         if (attempts >= maxAttempts) {
           console.log('⏰ Verification polling timeout for:', email);
-          clearInterval(checkInterval);
+          clearInterval(intervalId);
+          this.pollingIntervals.delete(email);
+          
+          // Log timeout
+          await pool.query(
+            `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+             VALUES ($1, $2, $3, $4, NOW())`,
+            ['VERIFICATION_TIMEOUT', `Verification timeout for: ${email}`, 1, 'System']
+          );
         }
       } catch (error) {
         console.log('⚠️ Verification check failed:', error.message);
         
-        // Stop on error
+        // Stop on error after max attempts
         if (attempts >= maxAttempts) {
-          clearInterval(checkInterval);
+          clearInterval(intervalId);
+          this.pollingIntervals.delete(email);
         }
       }
-    }, 10000); // Check every 10 seconds instead of 30
+    }, 10000); // Check every 10 seconds
+
+    // Store the interval ID for cleanup
+    this.pollingIntervals.set(email, intervalId);
   }
 
   async checkFirebaseVerification(firebaseUid) {
     return new Promise((resolve, reject) => {
       if (!firebaseUid) {
+        console.log('❌ No Firebase UID provided for verification check');
         resolve(false);
         return;
       }
@@ -137,13 +169,18 @@ class FirebaseEmailService {
         res.on('end', () => {
           try {
             const parsedData = JSON.parse(data);
+            console.log('📡 Firebase API Response:', {
+              statusCode: res.statusCode,
+              usersCount: parsedData.users ? parsedData.users.length : 0
+            });
+
             if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
               const user = parsedData.users[0];
               const isVerified = user.emailVerified || false;
-              console.log('🔍 Firebase verification check for', user.email, ':', isVerified);
+              console.log('🔍 Firebase verification status for', user.email, ':', isVerified);
               resolve(isVerified);
             } else {
-              console.log('❌ Firebase verification check failed - no users found');
+              console.log('❌ Firebase verification check failed - API error:', parsedData.error);
               resolve(false);
             }
           } catch (error) {
@@ -158,6 +195,12 @@ class FirebaseEmailService {
         resolve(false);
       });
 
+      req.setTimeout(10000, () => {
+        console.log('❌ Verification check timeout');
+        req.destroy();
+        resolve(false);
+      });
+
       req.write(userData);
       req.end();
     });
@@ -165,11 +208,12 @@ class FirebaseEmailService {
 
   async storeFirebaseUid(userId, firebaseUid) {
     try {
-      await pool.query(
-        'UPDATE users SET firebase_uid = $1 WHERE id = $2',
+      const result = await pool.query(
+        'UPDATE users SET firebase_uid = $1 WHERE id = $2 RETURNING *',
         [firebaseUid, userId]
       );
-      console.log('✅ Firebase UID stored for user:', userId);
+      console.log('✅ Firebase UID stored for user:', userId, 'UID:', firebaseUid);
+      return result;
     } catch (error) {
       console.log('❌ Error storing Firebase UID:', error.message);
       throw error;
@@ -204,6 +248,12 @@ class FirebaseEmailService {
         res.on('end', () => {
           try {
             const parsedData = JSON.parse(data);
+            console.log('📡 Firebase SignUp Response:', {
+              statusCode: res.statusCode,
+              email: parsedData.email,
+              localId: parsedData.localId
+            });
+
             if (res.statusCode === 200) {
               console.log('✅ Firebase user created:', email);
               resolve(parsedData);
@@ -276,7 +326,7 @@ class FirebaseEmailService {
         });
       });
 
-      req.on('error', (error) => {
+      req.on('error', (error) {
         console.log('❌ Network error in sign in');
         reject(error);
       });
@@ -345,18 +395,72 @@ class FirebaseEmailService {
       const isVerified = await this.checkFirebaseVerification(firebaseUid);
       
       if (isVerified) {
-        await pool.query(
-          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1',
+        const result = await pool.query(
+          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE firebase_uid = $1 RETURNING *',
           [firebaseUid]
         );
-        console.log('✅ Force verification successful for Firebase UID:', firebaseUid);
-        return { success: true, message: 'User verified successfully' };
+        
+        if (result.rows.length > 0) {
+          console.log('✅ Force verification successful for Firebase UID:', firebaseUid);
+          return { 
+            success: true, 
+            message: 'User verified successfully',
+            user: result.rows[0] 
+          };
+        } else {
+          console.log('❌ No user found with Firebase UID:', firebaseUid);
+          return { success: false, message: 'User not found' };
+        }
       } else {
         console.log('❌ User not verified in Firebase:', firebaseUid);
         return { success: false, message: 'User not verified in Firebase' };
       }
     } catch (error) {
       console.log('❌ Force verification error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // NEW METHOD: Manual verification sync for specific user
+  async manualSyncUserVerification(email) {
+    try {
+      console.log('🔧 Manual sync for user:', email);
+      
+      // Get user from database
+      const userResult = await pool.query(
+        'SELECT id, email, firebase_uid FROM users WHERE email = $1',
+        [email]
+      );
+
+      if (userResult.rows.length === 0) {
+        return { success: false, message: 'User not found' };
+      }
+
+      const user = userResult.rows[0];
+      
+      if (!user.firebase_uid) {
+        return { success: false, message: 'No Firebase UID found for user' };
+      }
+
+      const isVerified = await this.checkFirebaseVerification(user.firebase_uid);
+      
+      if (isVerified) {
+        const updateResult = await pool.query(
+          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+          [user.id]
+        );
+        
+        console.log('✅ Manual sync successful for:', email);
+        return { 
+          success: true, 
+          message: 'User verified successfully',
+          user: updateResult.rows[0] 
+        };
+      } else {
+        return { success: false, message: 'User not verified in Firebase' };
+      }
+    } catch (error) {
+      console.log('❌ Manual sync error:', error.message);
       return { success: false, error: error.message };
     }
   }
