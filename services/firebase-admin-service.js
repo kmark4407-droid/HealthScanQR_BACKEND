@@ -1,9 +1,9 @@
 // services/firebase-admin-service.js
 import admin from 'firebase-admin';
 
-// Check if Firebase Admin is already initialized
-if (!admin.apps.length) {
-  try {
+// Initialize Firebase Admin
+try {
+  if (!admin.apps.length) {
     const serviceAccount = {
       type: "service_account",
       project_id: process.env.FIREBASE_PROJECT_ID,
@@ -21,14 +21,14 @@ if (!admin.apps.length) {
     admin.initializeApp({
       credential: admin.credential.cert(serviceAccount)
     });
-    
     console.log('✅ Firebase Admin SDK initialized successfully');
-  } catch (error) {
-    console.error('❌ Firebase Admin initialization failed:', error.message);
-    // Don't throw error here - allow the app to start without Firebase Admin
   }
+} catch (error) {
+  console.error('❌ Firebase Admin initialization failed:', error.message);
+  // Don't crash the app if Firebase Admin fails
 }
 
+// Delete Firebase user function
 export const deleteFirebaseUser = async (firebaseUid) => {
   try {
     if (!firebaseUid) {
@@ -36,7 +36,7 @@ export const deleteFirebaseUser = async (firebaseUid) => {
       return { success: true, message: 'No Firebase UID provided' };
     }
 
-    console.log('🔥 Attempting to delete Firebase user:', firebaseUid);
+    console.log('🔥 Deleting Firebase user:', firebaseUid);
     await admin.auth().deleteUser(firebaseUid);
     
     console.log('✅ Firebase user deleted successfully:', firebaseUid);
@@ -45,7 +45,6 @@ export const deleteFirebaseUser = async (firebaseUid) => {
   } catch (error) {
     console.error('❌ Firebase Admin deletion error:', error.message);
     
-    // Handle specific error cases
     if (error.code === 'auth/user-not-found') {
       console.log('ℹ️ Firebase user already deleted');
       return { success: true, message: 'Firebase user already deleted' };
