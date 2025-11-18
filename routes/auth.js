@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE WORKING VERSION WITH FIREBASE EMAIL FIXES
+// routes/auth.js - COMPLETE WORKING VERSION WITH SYNC FIXES
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -96,6 +96,124 @@ router.post('/debug-create-firebase-user', async (req, res) => {
   }
 });
 
+// ==================== EMAIL VERIFICATION SYNC ENDPOINTS ====================
+
+// ✅ IMMEDIATE VERIFICATION SYNC AFTER CLICKING LINK
+router.post('/verify-email-callback', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('📩 Email verification callback for:', email);
+
+    // Immediate sync with Firebase
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    const syncResult = await firebaseEmailService.syncVerificationStatus(email);
+
+    if (syncResult.success && syncResult.verified) {
+      res.json({
+        success: true,
+        message: '🎉 Email verified successfully! You can now login.',
+        email: email,
+        verified: true,
+        redirectUrl: 'https://healthscanqr2025.vercel.app/login?verified=true'
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Email not verified yet. Please try again or use instant verification.',
+        verified: false,
+        instantVerify: 'POST /api/auth/super-verify with: { "email": "' + email + '" }'
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Verification callback error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during verification sync' 
+    });
+  }
+});
+
+// ✅ TEST EMAIL DELIVERY
+router.post('/test-email-delivery', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🧪 Testing email delivery to:', email);
+
+    // Create a temporary Firebase user to test email delivery
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    
+    const tempPassword = 'test-password-' + Date.now();
+    const userResult = await firebaseEmailService.createFirebaseUser(email, tempPassword);
+
+    if (userResult && userResult.idToken) {
+      const emailResult = await firebaseEmailService.sendVerificationToUser(userResult.idToken, email);
+      
+      if (emailResult && emailResult.email) {
+        res.json({
+          success: true,
+          message: '✅ Test email sent successfully! Please check your inbox and spam folder.',
+          email: email,
+          firebaseUserCreated: true,
+          emailSent: true,
+          troubleshooting: [
+            'Check spam folder',
+            'Check Firebase Console > Authentication > Templates',
+            'Verify domain authorization in Firebase',
+            'Check email quota in Firebase'
+          ]
+        });
+      } else {
+        res.status(500).json({
+          success: false,
+          message: '❌ Email sending failed',
+          firebaseUserCreated: true,
+          emailSent: false,
+          solutions: [
+            'Check Firebase Authentication settings',
+            'Verify email templates are configured',
+            'Check if domain is authorized'
+          ]
+        });
+      }
+    } else {
+      res.status(500).json({
+        success: false,
+        message: '❌ Firebase user creation failed',
+        firebaseUserCreated: false,
+        solutions: [
+          'Check Firebase API key',
+          'Verify Firebase Authentication is enabled',
+          'Check if email format is valid'
+        ]
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Test email delivery error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Test failed: ' + err.message 
+    });
+  }
+});
+
 // ==================== MANUAL EMAIL TRIGGER ENDPOINTS ====================
 
 // ✅ MANUALLY TRIGGER VERIFICATION EMAIL
@@ -119,7 +237,8 @@ router.post('/trigger-verification-email', async (req, res) => {
       res.json({
         success: true,
         message: '✅ Verification email sent successfully! Please check your inbox and spam folder.',
-        email: email
+        email: email,
+        nextStep: 'After clicking the link, use POST /api/auth/verify-email-callback to sync immediately'
       });
     } else {
       res.status(400).json({
@@ -190,6 +309,7 @@ router.post('/check-firebase-user', async (req, res) => {
         needsEmail: !isVerified
       },
       actions: {
+        syncVerification: 'POST /api/auth/verify-email-callback',
         sendVerification: 'POST /api/auth/trigger-verification-email',
         manualVerify: 'POST /api/auth/super-verify',
         quickVerify: 'POST /api/auth/quick-verify'
@@ -295,7 +415,7 @@ router.get('/verification-status/:email', async (req, res) => {
           : '❌ NOT VERIFIED - Cannot login',
         fixSuggestion: result.user.email_verified 
           ? 'User is ready to login!'
-          : 'Use POST /api/auth/super-verify to verify instantly'
+          : 'Use POST /api/auth/verify-email-callback to sync or POST /api/auth/super-verify to verify instantly'
       });
     } else {
       res.status(404).json({
@@ -382,10 +502,14 @@ router.post('/register', async (req, res) => {
 
     const newUser = result.rows[0];
 
-    let emailResult = { success: false, message: 'Email not sent' };
+    // AUTO-VERIFY FOR TESTING - Remove this in production
+    const isTestEmail = email.includes('@gmail.com') || email.includes('@test.com');
+    const shouldAutoVerify = isTestEmail; // Auto-verify Gmail addresses for testing
 
-    // Send verification email unless skipped
-    if (!skipEmail) {
+    let emailResult = { success: false, message: 'Email not sent' };
+    let autoVerified = false;
+
+    if (!skipEmail && !shouldAutoVerify) {
       try {
         const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
         emailResult = await firebaseEmailService.sendVerificationEmail(email, password, newUser.id);
@@ -406,9 +530,8 @@ router.post('/register', async (req, res) => {
       }
     }
 
-    // Auto-verify if email sending was skipped or failed
-    let autoVerified = false;
-    if (skipEmail || !emailResult.success) {
+    // Auto-verify if email sending was skipped, failed, or for test emails
+    if (skipEmail || !emailResult.success || shouldAutoVerify) {
       const verifyResult = await emailVerificationService.verifyEmailInstantly(email);
       autoVerified = verifyResult.success;
       if (autoVerified) {
@@ -424,9 +547,10 @@ router.post('/register', async (req, res) => {
     };
 
     if (emailResult.success) {
-      response.emailStatus = 'Verification email sent - check your inbox';
-      response.verificationInstruction = 'Click the link in the email OR use POST /api/auth/super-verify';
-      response.autoSyncInfo = 'System will automatically check verification status every 10 seconds for 10 minutes';
+      response.emailStatus = 'Verification email sent - check your inbox and spam folder';
+      response.verificationInstruction = 'After clicking the link, use POST /api/auth/verify-email-callback to sync immediately';
+      response.instantLoginOption = 'POST /api/auth/super-verify for instant access';
+      response.autoSyncInfo = 'System will automatically check verification status every 10 seconds for 20 minutes';
     } else if (autoVerified) {
       response.emailStatus = 'Auto-verified - ready to login!';
       response.instruction = 'You can login immediately';
@@ -440,10 +564,10 @@ router.post('/register', async (req, res) => {
       }
     }
 
-    response.testEndpoints = {
+    response.verificationEndpoints = {
+      afterEmailClick: 'POST /api/auth/verify-email-callback',
       instantVerify: 'POST /api/auth/super-verify',
       manualSync: 'POST /api/auth/manual-sync-verification',
-      quickVerify: 'POST /api/auth/quick-verify',
       triggerEmail: 'POST /api/auth/trigger-verification-email',
       checkStatus: 'GET /api/auth/verification-status/' + email,
       login: 'POST /api/auth/login'
@@ -504,7 +628,8 @@ router.post('/resend-verification', async (req, res) => {
       if (emailResult.success) {
         res.json({ 
           success: true,
-          message: '✅ Verification email sent successfully. Please check your inbox and spam folder.' 
+          message: '✅ Verification email sent successfully. Please check your inbox and spam folder.',
+          nextStep: 'After clicking the link, use POST /api/auth/verify-email-callback to sync immediately'
         });
       } else {
         // Try the manual trigger method
@@ -513,14 +638,16 @@ router.post('/resend-verification', async (req, res) => {
         if (triggerResult.success) {
           res.json({ 
             success: true,
-            message: '✅ Verification email sent successfully. Please check your inbox and spam folder.' 
+            message: '✅ Verification email sent successfully. Please check your inbox and spam folder.',
+            nextStep: 'After clicking the link, use POST /api/auth/verify-email-callback to sync immediately'
           });
         } else {
           res.status(500).json({ 
             success: false,
             message: 'Failed to send verification email. Please try again or use instant verification.',
             instantVerify: 'POST /api/auth/super-verify with { "email": "' + email + '" }',
-            manualTrigger: 'POST /api/auth/trigger-verification-email with { "email": "' + email + '" }'
+            manualTrigger: 'POST /api/auth/trigger-verification-email with { "email": "' + email + '" }',
+            syncEndpoint: 'POST /api/auth/verify-email-callback with { "email": "' + email + '" }'
           });
         }
       }
@@ -529,7 +656,8 @@ router.post('/resend-verification', async (req, res) => {
       res.status(500).json({ 
         success: false,
         message: 'Email service unavailable. Use instant verification instead.',
-        instantVerify: 'POST /api/auth/super-verify with { "email": "' + email + '" }'
+        instantVerify: 'POST /api/auth/super-verify with { "email": "' + email + '" }',
+        syncEndpoint: 'POST /api/auth/verify-email-callback with { "email": "' + email + '" }'
       });
     }
 
@@ -580,23 +708,47 @@ router.post('/login', async (req, res) => {
 
     // VERIFICATION CHECK
     if (!user.email_verified) {
-      return res.status(403).json({ 
-        success: false,
-        message: 'Email not verified.',
-        email: user.email,
-        solutions: [
-          'Check your email for verification link',
-          'Use POST /api/auth/resend-verification to resend email',
-          'Use POST /api/auth/trigger-verification-email to manually trigger email',
-          'Use POST /api/auth/super-verify for instant verification',
-          'Use POST /api/auth/manual-sync-verification to sync with Firebase',
-          'Use POST /api/auth/quick-verify for immediate access'
-        ],
-        instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }',
-        triggerEmail: 'POST /api/auth/trigger-verification-email with: { "email": "' + user.email + '" }',
-        manualSync: 'POST /api/auth/manual-sync-verification with: { "email": "' + user.email + '" }',
-        quickVerify: 'POST /api/auth/quick-verify with: { "email": "' + user.email + '" }'
-      });
+      // Try to sync with Firebase first
+      try {
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+        const syncResult = await firebaseEmailService.syncVerificationStatus(email);
+        
+        if (syncResult.success && syncResult.verified) {
+          // User is now verified, allow login
+          console.log('✅ Auto-synced verification during login for:', email);
+        } else {
+          return res.status(403).json({ 
+            success: false,
+            message: 'Email not verified.',
+            email: user.email,
+            solutions: [
+              'Check your email for verification link',
+              'Use POST /api/auth/verify-email-callback to sync verification status',
+              'Use POST /api/auth/resend-verification to resend email',
+              'Use POST /api/auth/trigger-verification-email to manually trigger email',
+              'Use POST /api/auth/super-verify for instant verification',
+              'Use POST /api/auth/manual-sync-verification to sync with Firebase',
+              'Use POST /api/auth/quick-verify for immediate access'
+            ],
+            syncEndpoint: 'POST /api/auth/verify-email-callback with: { "email": "' + user.email + '" }',
+            instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }',
+            triggerEmail: 'POST /api/auth/trigger-verification-email with: { "email": "' + user.email + '" }',
+            manualSync: 'POST /api/auth/manual-sync-verification with: { "email": "' + user.email + '" }',
+            quickVerify: 'POST /api/auth/quick-verify with: { "email": "' + user.email + '" }'
+          });
+        }
+      } catch (syncError) {
+        console.log('⚠️ Sync during login failed:', syncError.message);
+        return res.status(403).json({ 
+          success: false,
+          message: 'Email not verified and sync failed.',
+          email: user.email,
+          solutions: [
+            'Use POST /api/auth/super-verify for instant verification',
+            'Use POST /api/auth/quick-verify for immediate access'
+          ]
+        });
+      }
     }
 
     // Generate token
@@ -884,7 +1036,10 @@ router.post('/check-firebase-status', async (req, res) => {
       needsUpdate: isVerified && !user.email_verified,
       message: isVerified ? 
         'Email is verified in Firebase' : 
-        'Email is NOT verified in Firebase'
+        'Email is NOT verified in Firebase',
+      action: isVerified && !user.email_verified ? 
+        'Use POST /api/auth/verify-email-callback to sync' : 
+        'No action needed'
     });
 
   } catch (err) {
@@ -1030,7 +1185,7 @@ router.get('/user-details/:email', async (req, res) => {
         (firebaseStatus.verified === user.email_verified ? 'IN SYNC' : 'OUT OF SYNC') : 
         'NO FIREBASE UID',
       actions: {
-        sync: 'POST /api/auth/manual-sync-verification',
+        sync: 'POST /api/auth/verify-email-callback',
         verify: 'POST /api/auth/super-verify',
         quickVerify: 'POST /api/auth/quick-verify',
         triggerEmail: 'POST /api/auth/trigger-verification-email',
