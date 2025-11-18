@@ -463,14 +463,19 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
     if (userFirebaseUid) {
       console.log('🔥 Deleting Firebase user with Admin SDK:', userFirebaseUid);
-      const firebaseResult = await deleteFirebaseUser(userFirebaseUid);
-      
-      if (firebaseResult.success) {
-        firebaseDeleted = true;
-        console.log('✅ Firebase user deleted successfully with Admin SDK');
-      } else {
+      try {
+        const firebaseResult = await deleteFirebaseUser(userFirebaseUid);
+        firebaseDeleted = firebaseResult.success;
         firebaseError = firebaseResult.error;
-        console.log('❌ Firebase Admin SDK deletion failed:', firebaseError);
+        
+        if (firebaseDeleted) {
+          console.log('✅ Firebase user deleted successfully with Admin SDK');
+        } else {
+          console.log('⚠️ Firebase deletion had issues:', firebaseError);
+        }
+      } catch (firebaseErr) {
+        console.log('❌ Firebase deletion error:', firebaseErr.message);
+        firebaseError = firebaseErr.message;
       }
     } else {
       console.log('ℹ️ No Firebase UID found for user, skipping Firebase deletion');
@@ -500,6 +505,23 @@ router.delete('/delete-user/:user_id', async (req, res) => {
         message += ` Note: Firebase account may need manual deletion. Error: ${firebaseError}`;
       } else {
         message += ' No Firebase account found to delete.';
+      }
+
+      // Log the activity
+      try {
+        const adminResult = await pool.query(
+          'SELECT full_name FROM admins WHERE id = $1',
+          [admin_id]
+        );
+        const adminName = adminResult.rows[0]?.full_name || 'Administrator';
+
+        await pool.query(
+          `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+           VALUES ($1, $2, $3, $4, NOW())`,
+          ['DELETE_USER', `Deleted user: ${userEmail} (${userName})`, admin_id, adminName]
+        );
+      } catch (logError) {
+        console.log('⚠️ Failed to log activity:', logError.message);
       }
 
       res.json({
@@ -573,6 +595,23 @@ router.post('/approve-user', async (req, res) => {
       });
     }
 
+    // Log the activity
+    try {
+      const userResult = await pool.query(
+        'SELECT email FROM users WHERE id = $1',
+        [user_id]
+      );
+      const userEmail = userResult.rows[0]?.email || 'Unknown';
+
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['APPROVE_USER', `Approved medical info for user: ${userEmail}`, admin_id, adminName]
+      );
+    } catch (logError) {
+      console.log('⚠️ Failed to log activity:', logError.message);
+    }
+
     res.json({
       success: true,
       message: 'User medical information approved successfully'
@@ -599,6 +638,14 @@ router.post('/unapprove-user', async (req, res) => {
       });
     }
 
+    // Get admin name for logging
+    const adminResult = await pool.query(
+      'SELECT full_name FROM admins WHERE id = $1',
+      [admin_id]
+    );
+
+    const adminName = adminResult.rows[0]?.full_name || 'Administrator';
+
     // Update medical_info to remove approval
     const result = await pool.query(
       `UPDATE medical_info 
@@ -613,6 +660,23 @@ router.post('/unapprove-user', async (req, res) => {
         success: false,
         error: 'User medical information not found' 
       });
+    }
+
+    // Log the activity
+    try {
+      const userResult = await pool.query(
+        'SELECT email FROM users WHERE id = $1',
+        [user_id]
+      );
+      const userEmail = userResult.rows[0]?.email || 'Unknown';
+
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['UNAPPROVE_USER', `Unapproved medical info for user: ${userEmail}`, admin_id, adminName]
+      );
+    } catch (logError) {
+      console.log('⚠️ Failed to log activity:', logError.message);
     }
 
     res.json({
@@ -820,6 +884,94 @@ router.post('/change-user-profile', upload.single('profile_photo'), async (req, 
     res.status(500).json({ 
       success: false,
       error: 'Server error updating profile photo: ' + err.message 
+    });
+  }
+});
+
+// ==================== VERIFICATION MANAGEMENT ====================
+
+// ✅ FORCE VERIFY USER (Admin version)
+router.post('/force-verify-user', async (req, res) => {
+  try {
+    const { user_id, admin_id } = req.body;
+
+    if (!user_id || !admin_id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID and Admin ID are required' 
+      });
+    }
+
+    // Get user info
+    const userResult = await pool.query(
+      'SELECT email, firebase_uid FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    const userEmail = userResult.rows[0].email;
+    const userFirebaseUid = userResult.rows[0].firebase_uid;
+
+    let result;
+    if (userFirebaseUid) {
+      // Use Firebase sync method
+      const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+      const firebaseResult = await firebaseEmailService.forceVerifyByFirebaseUid(userFirebaseUid);
+      
+      if (firebaseResult.success) {
+        result = { success: true, message: 'User verified via Firebase sync' };
+      } else {
+        // Fallback to direct verification
+        result = await pool.query(
+          'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+          [user_id]
+        );
+      }
+    } else {
+      // Direct verification
+      result = await pool.query(
+        'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1 RETURNING *',
+        [user_id]
+      );
+    }
+
+    // Log the activity
+    try {
+      const adminResult = await pool.query(
+        'SELECT full_name FROM admins WHERE id = $1',
+        [admin_id]
+      );
+      const adminName = adminResult.rows[0]?.full_name || 'Administrator';
+
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['FORCE_VERIFY', `Force verified user: ${userEmail}`, admin_id, adminName]
+      );
+    } catch (logError) {
+      console.log('⚠️ Failed to log activity:', logError.message);
+    }
+
+    res.json({
+      success: true,
+      message: 'User verified successfully',
+      user: {
+        email: userEmail,
+        firebase_uid: userFirebaseUid
+      }
+    });
+
+  } catch (err) {
+    console.error('❌ Force verify user error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error verifying user: ' + err.message 
     });
   }
 });
