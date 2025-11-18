@@ -1,9 +1,9 @@
-// admin.js - COMPLETE FIXED VERSION WITH FIREBASE DELETION
+// routes/admin.js - COMPLETE FIXED VERSION WITH FIREBASE ADMIN SDK
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
-import firebaseEmailService from '../services/firebase-email-service.js';
+import { deleteFirebaseUser } from '../services/firebase-admin-service.js';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
@@ -422,7 +422,7 @@ router.get('/users', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER - WITH REAL FIREBASE DELETION
+// ✅ DELETE USER - WITH REAL FIREBASE ADMIN SDK DELETION
 router.delete('/delete-user/:user_id', async (req, res) => {
   try {
     const { user_id } = req.params;
@@ -457,35 +457,23 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
     console.log(`🗑️ Starting deletion process for user: ${userEmail} (Firebase UID: ${userFirebaseUid})`);
 
-    // ✅ DELETE FROM FIREBASE AUTH
+    // ✅ DELETE FROM FIREBASE AUTH USING ADMIN SDK
     let firebaseDeleted = false;
     let firebaseError = null;
 
     if (userFirebaseUid) {
-      console.log('🔥 Deleting Firebase user by UID:', userFirebaseUid);
-      const firebaseResult = await firebaseEmailService.deleteFirebaseUser(userFirebaseUid);
+      console.log('🔥 Deleting Firebase user with Admin SDK:', userFirebaseUid);
+      const firebaseResult = await deleteFirebaseUser(userFirebaseUid);
       
       if (firebaseResult.success) {
         firebaseDeleted = true;
-        console.log('✅ Firebase user deleted successfully');
+        console.log('✅ Firebase user deleted successfully with Admin SDK');
       } else {
         firebaseError = firebaseResult.error;
-        console.log('❌ Firebase deletion failed:', firebaseError);
+        console.log('❌ Firebase Admin SDK deletion failed:', firebaseError);
       }
-    }
-
-    // If UID deletion fails or no UID, try by email
-    if (!firebaseDeleted && userEmail) {
-      console.log('🔥 Attempting Firebase deletion by email:', userEmail);
-      const firebaseResult = await firebaseEmailService.deleteFirebaseUserByEmail(userEmail);
-      
-      if (firebaseResult.success) {
-        firebaseDeleted = true;
-        console.log('✅ Firebase user deleted successfully by email');
-      } else {
-        firebaseError = firebaseResult.error;
-        console.log('❌ Firebase email deletion failed:', firebaseError);
-      }
+    } else {
+      console.log('ℹ️ No Firebase UID found for user, skipping Firebase deletion');
     }
 
     // Start transaction for database deletion
@@ -504,24 +492,26 @@ router.delete('/delete-user/:user_id', async (req, res) => {
 
       console.log(`✅ User ${userEmail} deleted successfully from database`);
 
-    // Prepare response message
-    let message = 'User deleted successfully from database.';
-    if (firebaseDeleted) {
-      message += ' Firebase account also deleted.';
-    } else {
-      message += ` Note: Firebase account may need manual deletion. Error: ${firebaseError}`;
-    }
-
-    res.json({
-      success: true,
-      message: message,
-      deleted_user: {
-        email: userEmail,
-        firebase_uid: userFirebaseUid,
-        firebase_deleted: firebaseDeleted,
-        firebase_error: firebaseError
+      // Prepare response message
+      let message = 'User deleted successfully from database.';
+      if (firebaseDeleted) {
+        message += ' Firebase account also deleted.';
+      } else if (firebaseError) {
+        message += ` Note: Firebase account may need manual deletion. Error: ${firebaseError}`;
+      } else {
+        message += ' No Firebase account found to delete.';
       }
-    });
+
+      res.json({
+        success: true,
+        message: message,
+        deleted_user: {
+          email: userEmail,
+          firebase_uid: userFirebaseUid,
+          firebase_deleted: firebaseDeleted,
+          firebase_error: firebaseError
+        }
+      });
 
     } catch (error) {
       await client.query('ROLLBACK');
