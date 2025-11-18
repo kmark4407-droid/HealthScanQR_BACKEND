@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE REVISED VERSION WITH PROPER USER DELETION
+// routes/auth.js - COMPLETE REVISED VERSION WITH STRICT EMAIL VERIFICATION
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -6,7 +6,7 @@ import pool from '../db.js';
 
 const router = express.Router();
 
-// Fallback function if Firebase Admin is not available
+// Safe Firebase Admin loader with fallback
 const getFirebaseAdmin = async () => {
   try {
     const { deleteFirebaseUser } = await import('../services/firebase-admin-service.js');
@@ -26,13 +26,16 @@ const getFirebaseAdmin = async () => {
   }
 };
 
-// REGISTER - WITH EMAIL VERIFICATION
+// REGISTER - WITH STRICT EMAIL VERIFICATION
 router.post('/register', async (req, res) => {
   try {
     const { full_name, email, username, password } = req.body;
 
     if (!full_name || !email || !username || !password) {
-      return res.status(400).json({ message: 'All fields are required.' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'All fields are required.' 
+      });
     }
 
     // Check if user already exists
@@ -42,7 +45,10 @@ router.post('/register', async (req, res) => {
     );
 
     if (existingUser.rows.length > 0) {
-      return res.status(409).json({ message: 'Email or username already exists' });
+      return res.status(409).json({ 
+        success: false,
+        message: 'Email or username already exists' 
+      });
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -66,28 +72,51 @@ router.post('/register', async (req, res) => {
     
     if (emailResult.success) {
       console.log('✅ Email sent successfully, Firebase UID:', emailResult.firebaseUid);
+      
+      res.status(201).json({
+        success: true,
+        message: '✅ Registration successful! Please check your email inbox (and spam folder) for the verification link. You MUST verify your email before logging in.',
+        user: {
+          id: newUser.id,
+          email: newUser.email,
+          name: newUser.full_name,
+          emailVerified: false
+        },
+        requiresVerification: true,
+        verificationSent: true
+      });
     } else {
       console.log('⚠️ Email sending failed:', emailResult.error);
+      
+      res.status(201).json({
+        success: true,
+        message: '✅ Account created but verification email failed to send. Please try logging in to resend verification email.',
+        user: newUser,
+        requiresVerification: true,
+        verificationSent: false,
+        error: 'Email service temporarily unavailable'
+      });
     }
 
-    res.status(201).json({
-      message: '✅ Registration successful! Please check your email to verify your account before logging in.',
-      user: newUser,
-      requiresVerification: true
-    });
   } catch (err) {
     console.error('❌ Registration error:', err.message);
-    res.status(500).json({ message: 'Server error during registration' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during registration: ' + err.message 
+    });
   }
 });
 
-// LOGIN - WITH PROPER EMAIL VERIFICATION CHECK
+// LOGIN - WITH STRICT EMAIL VERIFICATION ENFORCEMENT
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
 
     if (!email || !password) {
-      return res.status(400).json({ message: 'Email and password are required.' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required.' 
+      });
     }
 
     const result = await pool.query(
@@ -96,40 +125,54 @@ router.post('/login', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password' 
+      });
     }
 
     const user = result.rows[0];
     const validPassword = await bcrypt.compare(password, user.password);
 
     if (!validPassword) {
-      return res.status(401).json({ message: 'Invalid credentials' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'Invalid email or password' 
+      });
     }
 
-    // ✅ CHECK EMAIL VERIFICATION - UPDATED LOGIC
+    // ✅ STRICT EMAIL VERIFICATION CHECK - NO AUTO VERIFICATION
     if (!user.email_verified) {
-      // Check if user has Firebase UID (meaning they went through email verification)
-      if (user.firebase_uid) {
-        console.log('🔄 User has Firebase UID, checking verification status...');
+      console.log('❌ Login blocked - email not verified for user:', email);
+      
+      // Check if we should resend verification email
+      const shouldResend = req.body.resendVerification || false;
+      
+      if (shouldResend) {
+        // Import the email service dynamically
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
         
-        // For now, we'll auto-verify users with Firebase UID
-        // In production, you'd check Firebase directly
-        await pool.query(
-          'UPDATE users SET email_verified = true WHERE id = $1',
-          [user.id]
-        );
+        console.log('📧 Resending verification email to:', email);
+        const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-resend-' + Date.now(), user.id);
         
-        console.log('✅ Auto-verified user with Firebase UID:', user.email);
-        
-        // Update user object
-        user.email_verified = true;
-      } else {
-        return res.status(403).json({ 
-          message: 'Please verify your email address before logging in. Check your inbox for the verification email.',
-          requiresVerification: true,
-          email: user.email
-        });
+        if (emailResult.success) {
+          return res.status(403).json({ 
+            success: false,
+            message: 'Email not verified. A new verification email has been sent to your inbox. Please check your email and verify your account before logging in.',
+            requiresVerification: true,
+            email: user.email,
+            verificationResent: true
+          });
+        }
       }
+      
+      return res.status(403).json({ 
+        success: false,
+        message: 'Please verify your email address before logging in. Check your inbox (and spam folder) for the verification email. Click "Resend Verification" if you need a new one.',
+        requiresVerification: true,
+        email: user.email,
+        verificationResent: false
+      });
     }
 
     // Check if user has medical info
@@ -148,11 +191,14 @@ router.post('/login', async (req, res) => {
         emailVerified: user.email_verified 
       },
       process.env.JWT_SECRET || 'secret_key',
-      { expiresIn: '1h' }
+      { expiresIn: '24h' }
     );
 
+    console.log('✅ Login successful for verified user:', email);
+
     res.json({
-      message: '✅ Login successful',
+      success: true,
+      message: '✅ Login successful!',
       token,
       user: {
         id: user.id,
@@ -165,7 +211,10 @@ router.post('/login', async (req, res) => {
     });
   } catch (err) {
     console.error('❌ Login error:', err.message);
-    res.status(500).json({ message: 'Server error during login' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during login' 
+    });
   }
 });
 
@@ -175,7 +224,10 @@ router.post('/verify-email', async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ message: 'Email is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
     }
 
     // Update user as verified
@@ -185,26 +237,38 @@ router.post('/verify-email', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
+    console.log('✅ Email verification completed for:', email);
+
     res.json({
+      success: true,
       message: '✅ Email verified successfully! You can now login.',
       user: result.rows[0]
     });
   } catch (err) {
     console.error('❌ Email verification error:', err.message);
-    res.status(500).json({ message: 'Server error during email verification' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during email verification' 
+    });
   }
 });
 
-// MANUAL VERIFY EMAIL (for testing/admin)
+// MANUAL VERIFY EMAIL (for testing/admin - bypasses email verification)
 router.post('/manual-verify-email', async (req, res) => {
   try {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ message: 'Email is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
     }
 
     // Update user as verified
@@ -214,16 +278,25 @@ router.post('/manual-verify-email', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
+    console.log('✅ Manual email verification completed for:', email);
+
     res.json({
+      success: true,
       message: '✅ Email manually verified successfully! You can now login.',
       user: result.rows[0]
     });
   } catch (err) {
     console.error('❌ Manual verification error:', err.message);
-    res.status(500).json({ message: 'Server error during manual verification' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during manual verification' 
+    });
   }
 });
 
@@ -233,7 +306,10 @@ router.post('/resend-verification', async (req, res) => {
     const { email } = req.body;
 
     if (!email) {
-      return res.status(400).json({ message: 'Email is required' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
     }
 
     // Check if user exists
@@ -243,30 +319,85 @@ router.post('/resend-verification', async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
     const user = userResult.rows[0];
 
     // If already verified
     if (user.email_verified) {
-      return res.status(400).json({ message: 'Email is already verified' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is already verified' 
+      });
     }
 
     // Import the email service dynamically
     const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
 
     // Resend verification email
+    console.log('📧 Resending verification email to:', email);
     const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-password-' + Date.now(), user.id);
 
     if (emailResult.success) {
-      res.json({ message: '✅ Verification email sent successfully. Please check your inbox.' });
+      res.json({ 
+        success: true,
+        message: '✅ Verification email sent successfully. Please check your inbox and spam folder.' 
+      });
     } else {
-      res.status(500).json({ message: 'Failed to send verification email. Please try again.' });
+      res.status(500).json({ 
+        success: false,
+        message: 'Failed to send verification email. Please try again.' 
+      });
     }
   } catch (err) {
     console.error('❌ Resend verification error:', err.message);
-    res.status(500).json({ message: 'Server error' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error' 
+    });
+  }
+});
+
+// CHECK VERIFICATION STATUS
+router.get('/verification-status/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+
+    const result = await pool.query(
+      'SELECT id, email, email_verified, firebase_uid, created_at FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = result.rows[0];
+
+    res.json({
+      success: true,
+      email: user.email,
+      emailVerified: user.email_verified,
+      firebaseUid: user.firebase_uid,
+      canLogin: user.email_verified,
+      message: user.email_verified 
+        ? 'Email is verified - can login' 
+        : 'Email not verified - cannot login'
+    });
+
+  } catch (err) {
+    console.error('❌ Verification status error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error checking verification status' 
+    });
   }
 });
 
@@ -278,7 +409,10 @@ router.delete('/user', async (req, res) => {
     const { email, userId } = req.body;
 
     if (!email && !userId) {
-      return res.status(400).json({ message: 'Email or user ID is required.' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email or user ID is required.' 
+      });
     }
 
     let user;
@@ -299,7 +433,10 @@ router.delete('/user', async (req, res) => {
     }
 
     if (!user) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
     console.log(`🗑️ Starting deletion process for user: ${user.email} (ID: ${user.id}, Firebase UID: ${user.firebase_uid})`);
@@ -338,6 +475,7 @@ router.delete('/user', async (req, res) => {
     await client.query('COMMIT');
 
     res.json({
+      success: true,
       message: '✅ User account deleted successfully!',
       database_deleted: true,
       firebase_deleted: firebaseResult.success,
@@ -353,6 +491,7 @@ router.delete('/user', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('❌ User deletion error:', err.message);
     res.status(500).json({ 
+      success: false,
       message: 'Server error during user deletion: ' + err.message 
     });
   } finally {
@@ -368,7 +507,10 @@ router.delete('/admin/user/:userId', async (req, res) => {
     const userId = parseInt(req.params.userId);
     
     if (!userId || isNaN(userId)) {
-      return res.status(400).json({ message: 'Valid user ID is required.' });
+      return res.status(400).json({ 
+        success: false,
+        message: 'Valid user ID is required.' 
+      });
     }
 
     console.log(`🗑️ Admin deletion request for user ID: ${userId}`);
@@ -380,7 +522,10 @@ router.delete('/admin/user/:userId', async (req, res) => {
     );
 
     if (userResult.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
     const user = userResult.rows[0];
@@ -420,6 +565,7 @@ router.delete('/admin/user/:userId', async (req, res) => {
     await client.query('COMMIT');
 
     res.json({
+      success: true,
       message: '✅ User account deleted successfully!',
       database_deleted: true,
       firebase_deleted: firebaseResult.success,
@@ -435,6 +581,7 @@ router.delete('/admin/user/:userId', async (req, res) => {
     await client.query('ROLLBACK');
     console.error('❌ Admin user deletion error:', err.message);
     res.status(500).json({ 
+      success: false,
       message: 'Server error during user deletion: ' + err.message 
     });
   } finally {
@@ -453,16 +600,23 @@ router.get('/user-by-email/:email', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
     res.json({
+      success: true,
       user: result.rows[0]
     });
 
   } catch (err) {
     console.error('❌ User lookup error:', err.message);
-    res.status(500).json({ message: 'Server error during user lookup' });
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during user lookup' 
+    });
   }
 });
 
@@ -472,7 +626,10 @@ router.get('/me', async (req, res) => {
     const token = req.headers.authorization?.replace('Bearer ', '');
     
     if (!token) {
-      return res.status(401).json({ message: 'No token provided' });
+      return res.status(401).json({ 
+        success: false,
+        message: 'No token provided' 
+      });
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET || 'secret_key');
@@ -483,16 +640,190 @@ router.get('/me', async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ message: 'User not found' });
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
     }
 
     res.json({
+      success: true,
       user: result.rows[0]
     });
 
   } catch (err) {
     console.error('❌ Profile error:', err.message);
-    res.status(401).json({ message: 'Invalid token' });
+    res.status(401).json({ 
+      success: false,
+      message: 'Invalid token' 
+    });
+  }
+});
+
+// ✅ CHECK USER EXISTS
+router.get('/check-user/:email', async (req, res) => {
+  try {
+    const email = req.params.email;
+
+    const result = await pool.query(
+      'SELECT id, email, username, email_verified FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        exists: false,
+        message: 'User not found' 
+      });
+    }
+
+    res.json({
+      success: true,
+      exists: true,
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    console.error('❌ Check user error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      exists: false,
+      message: 'Server error during user check' 
+    });
+  }
+});
+
+// ✅ UPDATE USER PROFILE
+router.put('/profile', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { userId, full_name, username } = req.body;
+
+    if (!userId) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'User ID is required.' 
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Update user profile
+    const result = await client.query(
+      `UPDATE users 
+       SET full_name = COALESCE($1, full_name), 
+           username = COALESCE($2, username),
+           updated_at = NOW()
+       WHERE id = $3
+       RETURNING id, full_name, email, username, email_verified, created_at, updated_at`,
+      [full_name, username, userId]
+    );
+
+    if (result.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: '✅ Profile updated successfully!',
+      user: result.rows[0]
+    });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('❌ Profile update error:', err.message);
+    
+    if (err.message.includes('unique constraint')) {
+      return res.status(409).json({ 
+        success: false,
+        message: 'Username already exists' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during profile update: ' + err.message 
+    });
+  } finally {
+    client.release();
+  }
+});
+
+// ✅ CHANGE PASSWORD
+router.put('/change-password', async (req, res) => {
+  const client = await pool.connect();
+  
+  try {
+    const { userId, currentPassword, newPassword } = req.body;
+
+    if (!userId || !currentPassword || !newPassword) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'User ID, current password, and new password are required.' 
+      });
+    }
+
+    await client.query('BEGIN');
+
+    // Get user with current password
+    const userResult = await client.query(
+      'SELECT * FROM users WHERE id = $1',
+      [userId]
+    );
+
+    if (userResult.rows.length === 0) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+
+    // Verify current password
+    const validPassword = await bcrypt.compare(currentPassword, user.password);
+    if (!validPassword) {
+      await client.query('ROLLBACK');
+      return res.status(401).json({ 
+        success: false,
+        message: 'Current password is incorrect' 
+      });
+    }
+
+    // Hash new password
+    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
+
+    // Update password
+    await client.query(
+      'UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2',
+      [hashedNewPassword, userId]
+    );
+
+    await client.query('COMMIT');
+
+    res.json({
+      success: true,
+      message: '✅ Password changed successfully!'
+    });
+
+  } catch (err) {
+    await client.query('ROLLBACK');
+    console.error('❌ Change password error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during password change: ' + err.message 
+    });
+  } finally {
+    client.release();
   }
 });
 
