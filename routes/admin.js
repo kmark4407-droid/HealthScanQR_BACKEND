@@ -1,4 +1,4 @@
-// routes/admin.js - COMPLETE REVISED VERSION
+// routes/admin.js - COMPLETE REVISED VERSION WITH MEDICAL UPDATES
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -662,6 +662,231 @@ router.post('/unapprove-user', async (req, res) => {
     res.status(500).json({ 
       success: false,
       error: 'Server error unapproving user' 
+    });
+  }
+});
+
+// ==================== MEDICAL INFO MANAGEMENT ====================
+
+// ✅ UPDATE MEDICAL INFORMATION (Admin version)
+router.put('/update-medical/:user_id', async (req, res) => {
+  try {
+    const user_id = parseInt(req.params.user_id);
+    const {
+      full_name, dob, blood_type, address, 
+      allergies, medications, conditions, emergency_contact,
+      admin_id
+    } = req.body;
+
+    console.log('🏥 ADMIN: Updating medical info for user:', user_id);
+    console.log('📋 Update data:', { 
+      full_name, dob, blood_type, 
+      admin_id, has_allergies: !!allergies 
+    });
+
+    if (!user_id || isNaN(user_id)) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Invalid user ID' 
+      });
+    }
+
+    if (!admin_id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Admin ID is required' 
+      });
+    }
+
+    // Validate required fields
+    const requiredFields = ['full_name', 'dob', 'blood_type', 'address', 'emergency_contact'];
+    const missingFields = requiredFields.filter(field => !req.body[field]);
+    
+    if (missingFields.length > 0) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields: ' + missingFields.join(', '),
+        missing: missingFields 
+      });
+    }
+
+    // Check if user exists
+    const userCheck = await pool.query(
+      'SELECT id FROM users WHERE id = $1',
+      [user_id]
+    );
+
+    if (userCheck.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'User not found' 
+      });
+    }
+
+    // Check if medical info exists
+    const existingQuery = await pool.query(
+      'SELECT id FROM medical_info WHERE user_id = $1',
+      [user_id]
+    );
+
+    let result;
+    
+    if (existingQuery.rows.length > 0) {
+      // Update existing record
+      const updateQuery = `
+        UPDATE medical_info 
+        SET full_name = $2, dob = $3, blood_type = $4, address = $5, 
+            allergies = $6, medications = $7, conditions = $8, 
+            emergency_contact = $9, updated_at = CURRENT_TIMESTAMP
+        WHERE user_id = $1
+        RETURNING *`;
+      
+      result = await pool.query(updateQuery, [
+        user_id, full_name, dob, blood_type, address, 
+        allergies || '', medications || '', conditions || '', emergency_contact
+      ]);
+
+      console.log('✅ Medical info updated by admin');
+    } else {
+      // Insert new record
+      const insertQuery = `
+        INSERT INTO medical_info 
+          (user_id, full_name, dob, blood_type, address, allergies, medications, conditions, emergency_contact)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) 
+        RETURNING *`;
+      
+      result = await pool.query(insertQuery, [
+        user_id, full_name, dob, blood_type, address, 
+        allergies || '', medications || '', conditions || '', emergency_contact
+      ]);
+
+      console.log('✅ Medical info created by admin');
+    }
+
+    const savedRecord = result.rows[0];
+    
+    // Log the activity
+    try {
+      const adminResult = await pool.query(
+        'SELECT full_name FROM admins WHERE id = $1',
+        [admin_id]
+      );
+      const adminName = adminResult.rows[0]?.full_name || 'Administrator';
+
+      await pool.query(
+        `INSERT INTO activity_logs (action, description, admin_id, admin_name, timestamp)
+         VALUES ($1, $2, $3, $4, NOW())`,
+        ['UPDATE_MEDICAL', `Updated medical information for user ID: ${user_id} (${full_name})`, admin_id, adminName]
+      );
+    } catch (logError) {
+      console.log('⚠️ Failed to log activity:', logError.message);
+    }
+
+    console.log('✅ Medical info update completed for user:', user_id);
+
+    res.json({ 
+      success: true,
+      message: 'Medical information updated successfully',
+      data: savedRecord,
+      lastUpdated: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Admin update medical error:', err.message);
+    
+    if (err.code === '23502') { // not_null_violation
+      return res.status(400).json({ 
+        success: false,
+        error: 'Missing required fields' 
+      });
+    }
+    
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error updating medical information: ' + err.message 
+    });
+  }
+});
+
+// ✅ FIND USER BY MEDICAL INFO
+router.post('/find-user-by-medical', async (req, res) => {
+  try {
+    const { full_name, dob } = req.body;
+
+    console.log('🔍 ADMIN: Finding user by medical info:', { full_name, dob });
+
+    if (!full_name) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'Full name is required' 
+      });
+    }
+
+    let query = `
+      SELECT user_id 
+      FROM medical_info 
+      WHERE full_name ILIKE $1
+    `;
+    let params = [`%${full_name}%`];
+
+    if (dob) {
+      query += ` AND dob = $2`;
+      params.push(dob);
+    }
+
+    const result = await pool.query(query, params);
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        error: 'No user found with matching medical information' 
+      });
+    }
+
+    console.log('✅ Found user:', result.rows[0].user_id);
+
+    res.json({
+      success: true,
+      user_id: result.rows[0].user_id
+    });
+
+  } catch (err) {
+    console.error('❌ Find user by medical error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error finding user: ' + err.message 
+    });
+  }
+});
+
+// ✅ REFRESH USER DATA
+router.post('/refresh-user-data', async (req, res) => {
+  try {
+    const { user_id } = req.body;
+
+    console.log('🔄 Refreshing user data for:', user_id);
+
+    if (!user_id) {
+      return res.status(400).json({ 
+        success: false,
+        error: 'User ID is required' 
+      });
+    }
+
+    // This endpoint just acknowledges the refresh request
+    // The actual refresh happens when the admin loads users again
+    
+    res.json({
+      success: true,
+      message: 'User data refresh triggered',
+      user_id: user_id
+    });
+
+  } catch (err) {
+    console.error('❌ Refresh user data error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: 'Server error refreshing user data: ' + err.message 
     });
   }
 });
