@@ -1,4 +1,4 @@
-// index.js - CLEAN VERSION (NO FIREBASE ADMIN)
+// index.js - COMPLETE REVISED WITH WORKING EMAIL VERIFICATION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -65,42 +65,147 @@ app.get('/api/test', (req, res) => {
   });
 });
 
-// ✅ VERIFICATION CALLBACK ENDPOINT (CRITICAL FOR EMAIL VERIFICATION)
-app.get('/api/verify-callback', async (req, res) => {
+// ✅ DEBUG ENDPOINT - See what Firebase is actually sending
+app.get('/api/debug-firebase-callback', async (req, res) => {
   try {
-    const { email, oobCode } = req.query;
+    const allParams = req.query;
+    console.log('🔍 DEBUG - All query parameters received:', allParams);
+    console.log('🔍 DEBUG - Raw URL:', req.url);
+    console.log('🔍 DEBUG - Headers:', req.headers);
 
-    console.log('🎯 VERIFICATION CALLBACK RECEIVED:', { email, oobCode: oobCode ? 'present' : 'missing' });
+    res.json({
+      success: true,
+      message: 'Debug information logged',
+      parameters: allParams,
+      headers: req.headers,
+      timestamp: new Date().toISOString()
+    });
 
-    if (!email) {
-      console.log('❌ No email provided in callback');
-      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email');
-    }
+  } catch (err) {
+    console.error('❌ Debug endpoint error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: err.message 
+    });
+  }
+});
+
+// ✅ FIREBASE VERIFICATION CALLBACK - WORKING VERSION
+app.get('/api/auth/firebase-verify-callback', async (req, res) => {
+  try {
+    const { email, oobCode, mode } = req.query;
+
+    console.log('🎯 FIREBASE VERIFICATION CALLBACK RECEIVED');
+    console.log('📧 Email parameter:', email || 'NOT PROVIDED');
+    console.log('🔑 OOB Code:', oobCode ? 'PRESENT' : 'MISSING');
+    console.log('🎯 Mode:', mode || 'NOT PROVIDED');
 
     // Import the email service
     const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
 
-    let verifiedEmail = email;
+    let verifiedEmail = null;
 
-    // If OOB code is provided, verify it first
+    // METHOD 1: If OOB code is provided, use it to get the email (MOST RELIABLE)
     if (oobCode) {
-      console.log('🔐 Verifying OOB code...');
+      console.log('🔐 METHOD 1: Using OOB code to extract email...');
       const verificationResult = await firebaseEmailService.verifyOobCode(oobCode);
       
-      if (verificationResult.success) {
-        console.log('✅ OOB code verified successfully');
-        verifiedEmail = verificationResult.email || email;
+      if (verificationResult.success && verificationResult.email) {
+        verifiedEmail = verificationResult.email;
+        console.log('✅ Email extracted from OOB code:', verifiedEmail);
       } else {
-        console.log('❌ OOB code verification failed, using provided email');
+        console.log('❌ Failed to extract email from OOB code:', verificationResult.error);
       }
     }
 
+    // METHOD 2: If email is directly provided in URL
+    if (!verifiedEmail && email) {
+      console.log('📧 METHOD 2: Using email from URL parameter:', email);
+      verifiedEmail = email;
+      
+      // If we have OOB code, verify it
+      if (oobCode) {
+        console.log('🔐 Verifying OOB code with extracted email...');
+        await firebaseEmailService.verifyOobCode(oobCode);
+      }
+    }
+
+    // If we still don't have an email, show error
+    if (!verifiedEmail) {
+      console.log('❌ CRITICAL: Could not determine email address');
+      console.log('❌ Available parameters:', { 
+        email: email || 'missing', 
+        oobCode: oobCode ? 'present' : 'missing', 
+        mode: mode || 'missing' 
+      });
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email_detected');
+    }
+
     // Update database verification status
+    console.log('🔄 Updating database verification for:', verifiedEmail);
+    const dbResult = await firebaseEmailService.handleVerificationCallback(verifiedEmail);
+
+    if (dbResult.success) {
+      console.log('🎉 SUCCESS: Email verified in database:', verifiedEmail);
+      console.log('✅ User verification status:', dbResult.user.email_verified);
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(verifiedEmail)}`);
+    } else {
+      console.log('❌ Database update failed for:', verifiedEmail);
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verification_error=database_failed&email=${encodeURIComponent(verifiedEmail)}`);
+    }
+
+  } catch (err) {
+    console.error('❌ Firebase callback error:', err.message);
+    console.error('❌ Error stack:', err.stack);
+    res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
+  }
+});
+
+// ✅ ALTERNATIVE VERIFICATION CALLBACK
+app.get('/api/verify-callback', async (req, res) => {
+  try {
+    const { email, oobCode } = req.query;
+
+    console.log('🎯 ALTERNATIVE VERIFICATION CALLBACK RECEIVED');
+    console.log('📧 Email:', email || 'NOT PROVIDED');
+    console.log('🔑 OOB Code:', oobCode ? 'PRESENT' : 'MISSING');
+
+    if (!oobCode && !email) {
+      console.log('❌ No OOB code or email provided');
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_parameters');
+    }
+
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+
+    let verifiedEmail = null;
+
+    // Priority: OOB code first, then email parameter
+    if (oobCode) {
+      console.log('🔐 Using OOB code to extract email...');
+      const verificationResult = await firebaseEmailService.verifyOobCode(oobCode);
+      
+      if (verificationResult.success && verificationResult.email) {
+        verifiedEmail = verificationResult.email;
+        console.log('✅ Email from OOB code:', verifiedEmail);
+      }
+    }
+
+    if (!verifiedEmail && email) {
+      console.log('📧 Using provided email parameter:', email);
+      verifiedEmail = email;
+    }
+
+    if (!verifiedEmail) {
+      console.log('❌ Could not determine email address');
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email_detected');
+    }
+
+    // Update database
     console.log('🔄 Updating database for:', verifiedEmail);
     const dbResult = await firebaseEmailService.handleVerificationCallback(verifiedEmail);
 
     if (dbResult.success) {
-      console.log('✅ DATABASE UPDATED - Email verified:', verifiedEmail);
+      console.log('✅ Database updated successfully');
       res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(verifiedEmail)}`);
     } else {
       console.log('❌ Database update failed');
@@ -108,7 +213,7 @@ app.get('/api/verify-callback', async (req, res) => {
     }
 
   } catch (err) {
-    console.error('❌ Verification callback error:', err.message);
+    console.error('❌ Alternative callback error:', err.message);
     res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
   }
 });
@@ -192,6 +297,53 @@ app.post('/api/quick-verify', async (req, res) => {
   }
 });
 
+// ✅ TEST EMAIL VERIFICATION ENDPOINT
+app.post('/api/test-email-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🧪 Testing email verification for:', email);
+
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+    
+    // Test Firebase connection
+    const connectionTest = await firebaseEmailService.testFirebaseConnection();
+    
+    if (!connectionTest.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase connection failed',
+        error: connectionTest.error
+      });
+    }
+
+    // Create test user and send verification
+    const testPassword = 'test123456';
+    const emailResult = await firebaseEmailService.sendVerificationEmail(email, testPassword, 'test-user-id');
+
+    res.json({
+      success: true,
+      message: 'Test email verification initiated',
+      connection: connectionTest,
+      emailResult: emailResult
+    });
+
+  } catch (err) {
+    console.error('❌ Test email error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Test failed: ' + err.message 
+    });
+  }
+});
+
 // Catch-all handler
 app.all('*', (req, res) => {
   console.log(`⚠️ 404 - Route not found: ${req.method} ${req.url}`);
@@ -203,9 +355,12 @@ app.all('*', (req, res) => {
     available_endpoints: [
       'GET /api/health',
       'GET /api/test',
-      'GET /api/verify-callback (Email verification)',
+      'GET /api/debug-firebase-callback (Debug)',
+      'GET /api/auth/firebase-verify-callback (Firebase Email Verification)',
+      'GET /api/verify-callback (Alternative Email Verification)',
       'POST /api/manual-sync-verification',
       'POST /api/quick-verify',
+      'POST /api/test-email-verification',
       'POST /api/auth/register',
       'POST /api/auth/login',
       'GET /api/auth/me'
@@ -219,7 +374,9 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
   console.log(`🎉 EMAIL VERIFICATION SYSTEM READY!`);
-  console.log(`📧 Verification callback: /api/verify-callback`);
-  console.log(`🔗 Set Firebase Action URL to:`);
-  console.log(`   https://healthscanqr-backend.onrender.com/api/verify-callback?email=%%email%%`);
+  console.log(`📧 Firebase callback: /api/auth/firebase-verify-callback`);
+  console.log(`📧 Alternative callback: /api/verify-callback`);
+  console.log(`🐛 Debug endpoint: /api/debug-firebase-callback`);
+  console.log(`🔗 Make sure Firebase Action URL is set to:`);
+  console.log(`   https://healthscanqr-backend.onrender.com/api/auth/firebase-verify-callback`);
 });
