@@ -3,7 +3,6 @@ import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
 import pool from '../db.js';
-import emailVerificationService from '../services/email-verification-service.js';
 
 const router = express.Router();
 
