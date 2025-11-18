@@ -323,6 +323,177 @@ class FirebaseEmailService {
     }
   }
 
+  // ✅ CHECK FIREBASE USER VERIFICATION STATUS
+  async checkFirebaseUserVerification(email, password) {
+    try {
+      console.log('🔍 Checking Firebase verification status for:', email);
+      
+      // First, sign in to get the user's current status
+      const signInResult = await this.signInFirebaseUser(email, password);
+      
+      if (signInResult && signInResult.emailVerified) {
+        console.log('✅ User is verified in Firebase:', email);
+        return {
+          success: true,
+          emailVerified: true,
+          localId: signInResult.localId,
+          email: signInResult.email
+        };
+      } else {
+        console.log('❌ User not verified in Firebase:', email);
+        return {
+          success: true,
+          emailVerified: false,
+          localId: signInResult.localId,
+          email: signInResult.email
+        };
+      }
+    } catch (error) {
+      console.log('❌ Error checking Firebase verification:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // ✅ GET FIREBASE USER BY EMAIL (Admin SDK alternative)
+  async getFirebaseUserByEmail(email) {
+    return new Promise((resolve, reject) => {
+      console.log('🔍 Getting Firebase user by email:', email);
+      
+      const userData = JSON.stringify({
+        email: email
+      });
+
+      const options = {
+        hostname: 'identitytoolkit.googleapis.com',
+        path: `/v1/accounts:lookup?key=${this.apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(userData)
+        },
+        timeout: 10000
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          console.log('📡 Firebase user lookup response:', res.statusCode);
+          
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
+              const user = parsedData.users[0];
+              console.log('✅ Firebase user found - verified:', user.emailVerified);
+              resolve({
+                success: true,
+                emailVerified: user.emailVerified,
+                localId: user.localId,
+                email: user.email
+              });
+            } else {
+              console.log('❌ Firebase user not found');
+              resolve({
+                success: false,
+                error: 'User not found in Firebase'
+              });
+            }
+          } catch (error) {
+            console.log('❌ JSON parse error in user lookup');
+            resolve({
+              success: false,
+              error: 'Failed to parse user lookup response'
+            });
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Network error in user lookup:', error.message);
+        resolve({
+          success: false,
+          error: 'Network error: ' + error.message
+        });
+      });
+
+      req.on('timeout', () => {
+        console.log('❌ User lookup timeout');
+        resolve({
+          success: false,
+          error: 'User lookup timeout'
+        });
+      });
+
+      req.write(userData);
+      req.end();
+    });
+  }
+
+  // ✅ FORCE SYNC VERIFICATION STATUS
+  async forceSyncVerification(email, password) {
+    try {
+      console.log('🔄 Force syncing verification for:', email);
+      
+      // Check current Firebase verification status
+      const verificationCheck = await this.checkFirebaseUserVerification(email, password);
+      
+      if (verificationCheck.success && verificationCheck.emailVerified) {
+        console.log('✅ User is verified in Firebase, updating database...');
+        
+        // Update database via API call to our own backend
+        const updateResult = await this.updateDatabaseVerification(email);
+        
+        return {
+          success: true,
+          emailVerified: true,
+          databaseUpdated: updateResult.success,
+          message: 'Verification synced successfully'
+        };
+      } else {
+        console.log('❌ User not verified in Firebase yet');
+        return {
+          success: false,
+          emailVerified: false,
+          message: 'Email not verified in Firebase'
+        };
+      }
+    } catch (error) {
+      console.log('❌ Force sync error:', error.message);
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  // ✅ UPDATE DATABASE VERIFICATION STATUS
+  async updateDatabaseVerification(email) {
+    try {
+      const result = await pool.query(
+        'UPDATE users SET email_verified = true, updated_at = NOW() WHERE email = $1 RETURNING *',
+        [email]
+      );
+
+      if (result.rows.length > 0) {
+        console.log('✅ Database verification updated for:', email);
+        return { success: true, user: result.rows[0] };
+      } else {
+        console.log('❌ User not found in database for update:', email);
+        return { success: false, error: 'User not found' };
+      }
+    } catch (error) {
+      console.log('❌ Database update error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
   // Test Firebase connection
   async testFirebaseConnection() {
     try {
