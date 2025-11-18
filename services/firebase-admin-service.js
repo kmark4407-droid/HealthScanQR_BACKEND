@@ -25,7 +25,6 @@ try {
   }
 } catch (error) {
   console.error('❌ Firebase Admin initialization failed:', error.message);
-  // Don't crash the app if Firebase Admin fails
 }
 
 // Delete Firebase user function
