@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE REVISED FOR EMAIL VERIFICATION SYNC
+// routes/auth.js - COMPLETE WITH EMAIL VERIFICATION FIXES
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -250,6 +250,39 @@ router.get('/verify-email-callback', async (req, res) => {
   } catch (err) {
     console.error('❌ GET Verification callback error:', err.message);
     res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
+  }
+});
+
+// ✅ FIREBASE REDIRECT HANDLER (SPECIFIC FOR FIREBASE TEMPLATES)
+router.get('/firebase-verify-callback', async (req, res) => {
+  try {
+    const { email } = req.query;
+
+    if (!email) {
+      return res.redirect('https://healthscanqr2025.vercel.app/login?error=no_email');
+    }
+
+    console.log('📩 Firebase verification callback for:', email);
+
+    // Update database to mark as verified
+    const result = await pool.query(
+      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
+      [email]
+    );
+
+    if (result.rows.length === 0) {
+      console.log('❌ User not found for email:', email);
+      return res.redirect('https://healthscanqr2025.vercel.app/login?error=user_not_found');
+    }
+
+    console.log('✅ Email verified in database via Firebase callback:', email);
+
+    // Redirect to frontend with success
+    res.redirect('https://healthscanqr2025.vercel.app/login?verified=true');
+
+  } catch (err) {
+    console.error('❌ Firebase callback error:', err.message);
+    res.redirect('https://healthscanqr2025.vercel.app/login?error=server_error');
   }
 });
 
