@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE REVISED VERSION WITH STRICT EMAIL VERIFICATION
+// routes/auth.js - COMPLETE REVISED VERSION WITH VERIFICATION SYNC
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -26,7 +26,7 @@ const getFirebaseAdmin = async () => {
   }
 };
 
-// REGISTER - WITH STRICT EMAIL VERIFICATION
+// REGISTER - WITH EMAIL VERIFICATION
 router.post('/register', async (req, res) => {
   try {
     const { full_name, email, username, password } = req.body;
@@ -107,7 +107,7 @@ router.post('/register', async (req, res) => {
   }
 });
 
-// LOGIN - WITH STRICT EMAIL VERIFICATION ENFORCEMENT
+// LOGIN - WITH VERIFICATION SYNC FROM FIREBASE
 router.post('/login', async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -141,37 +141,73 @@ router.post('/login', async (req, res) => {
       });
     }
 
-    // ✅ STRICT EMAIL VERIFICATION CHECK - NO AUTO VERIFICATION
-    if (!user.email_verified) {
-      console.log('❌ Login blocked - email not verified for user:', email);
+    // ✅ CHECK AND SYNC VERIFICATION STATUS FROM FIREBASE
+    if (!user.email_verified && user.firebase_uid) {
+      console.log('🔄 Checking Firebase verification status for:', email);
       
-      // Check if we should resend verification email
-      const shouldResend = req.body.resendVerification || false;
-      
-      if (shouldResend) {
-        // Import the email service dynamically
+      try {
         const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
         
-        console.log('📧 Resending verification email to:', email);
-        const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-resend-' + Date.now(), user.id);
+        // Check if email is verified in Firebase
+        const firebaseStatus = await firebaseEmailService.checkEmailVerificationByUid(user.firebase_uid);
         
-        if (emailResult.success) {
+        if (firebaseStatus.success && firebaseStatus.emailVerified) {
+          // Update our database to match Firebase
+          await pool.query(
+            'UPDATE users SET email_verified = true WHERE id = $1',
+            [user.id]
+          );
+          console.log('✅ Synced verification status from Firebase - user is verified');
+          user.email_verified = true;
+        } else {
+          console.log('❌ Email not verified in Firebase yet');
+          
+          // Check if we should resend verification email
+          const shouldResend = req.body.resendVerification || false;
+          
+          if (shouldResend) {
+            console.log('📧 Resending verification email to:', email);
+            const emailResult = await firebaseEmailService.sendVerificationEmail(email, 'temp-resend-' + Date.now(), user.id);
+            
+            if (emailResult.success) {
+              return res.status(403).json({ 
+                success: false,
+                message: 'Email not verified. A new verification email has been sent to your inbox. Please check your email and verify your account before logging in.',
+                requiresVerification: true,
+                email: user.email,
+                verificationResent: true
+              });
+            }
+          }
+          
           return res.status(403).json({ 
             success: false,
-            message: 'Email not verified. A new verification email has been sent to your inbox. Please check your email and verify your account before logging in.',
+            message: 'Please verify your email address before logging in. Check your inbox (and spam folder) for the verification email. Click "Resend Verification" if you need a new one.',
             requiresVerification: true,
             email: user.email,
-            verificationResent: true
+            verificationResent: false
+          });
+        }
+      } catch (firebaseError) {
+        console.log('⚠️ Firebase check failed, using database status:', firebaseError.message);
+        
+        if (!user.email_verified) {
+          return res.status(403).json({ 
+            success: false,
+            message: 'Please verify your email address before logging in.',
+            requiresVerification: true,
+            email: user.email
           });
         }
       }
-      
+    } else if (!user.email_verified) {
+      // No Firebase UID and not verified in database
+      console.log('❌ Login blocked - email not verified for user:', email);
       return res.status(403).json({ 
         success: false,
-        message: 'Please verify your email address before logging in. Check your inbox (and spam folder) for the verification email. Click "Resend Verification" if you need a new one.',
+        message: 'Please verify your email address before logging in.',
         requiresVerification: true,
-        email: user.email,
-        verificationResent: false
+        email: user.email
       });
     }
 
@@ -218,8 +254,8 @@ router.post('/login', async (req, res) => {
   }
 });
 
-// VERIFY EMAIL ENDPOINT (for when user clicks verification link)
-router.post('/verify-email', async (req, res) => {
+// ✅ VERIFICATION CALLBACK - Called when user verifies email
+router.post('/verification-callback', async (req, res) => {
   try {
     const { email } = req.body;
 
@@ -230,36 +266,127 @@ router.post('/verify-email', async (req, res) => {
       });
     }
 
-    // Update user as verified
+    console.log('📧 Email verification callback received for:', email);
+
+    // Update user as verified in our database
     const result = await pool.query(
-      `UPDATE users SET email_verified = true WHERE email = $1 RETURNING id, email, email_verified`,
+      `UPDATE users SET email_verified = true, updated_at = NOW() 
+       WHERE email = $1 
+       RETURNING id, email, email_verified`,
       [email]
     );
 
     if (result.rows.length === 0) {
+      console.log('❌ User not found for verification callback:', email);
       return res.status(404).json({ 
         success: false,
         message: 'User not found' 
       });
     }
 
-    console.log('✅ Email verification completed for:', email);
+    const user = result.rows[0];
+    console.log('✅ Database updated - user verified:', user.email);
 
     res.json({
       success: true,
-      message: '✅ Email verified successfully! You can now login.',
-      user: result.rows[0]
+      message: '✅ Email verification completed successfully! You can now login.',
+      user: user
     });
+
   } catch (err) {
-    console.error('❌ Email verification error:', err.message);
+    console.error('❌ Verification callback error:', err.message);
     res.status(500).json({ 
       success: false,
-      message: 'Server error during email verification' 
+      message: 'Server error during verification callback' 
     });
   }
 });
 
-// MANUAL VERIFY EMAIL (for testing/admin - bypasses email verification)
+// ✅ SYNC VERIFICATION STATUS - Manual sync endpoint
+router.post('/sync-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🔄 Manually syncing verification status for:', email);
+
+    // Get user from database
+    const userResult = await pool.query(
+      'SELECT * FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+    let firebaseVerified = false;
+
+    // If user has Firebase UID, check their verification status in Firebase
+    if (user.firebase_uid) {
+      try {
+        const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+        
+        // Check Firebase verification status
+        const firebaseStatus = await firebaseEmailService.checkEmailVerificationByUid(user.firebase_uid);
+        
+        if (firebaseStatus.success && firebaseStatus.emailVerified) {
+          firebaseVerified = true;
+          
+          // Update database if Firebase says email is verified
+          if (!user.email_verified) {
+            const updateResult = await pool.query(
+              `UPDATE users SET email_verified = true, updated_at = NOW() 
+               WHERE email = $1 
+               RETURNING id, email, email_verified`,
+              [email]
+            );
+            console.log('✅ Sync completed - updated database to match Firebase verification');
+            user.email_verified = true;
+          }
+        }
+      } catch (firebaseError) {
+        console.log('⚠️ Firebase check failed:', firebaseError.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: firebaseVerified 
+        ? '✅ Email is verified in Firebase' 
+        : user.email_verified 
+          ? '✅ Email is verified in database' 
+          : '❌ Email not verified yet',
+      user: {
+        id: user.id,
+        email: user.email,
+        emailVerified: user.email_verified,
+        firebaseUid: user.firebase_uid,
+        firebaseVerified: firebaseVerified
+      },
+      canLogin: user.email_verified
+    });
+
+  } catch (err) {
+    console.error('❌ Sync verification error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during verification sync' 
+    });
+  }
+});
+
+// ✅ MANUAL VERIFY EMAIL - Force verify for testing
 router.post('/manual-verify-email', async (req, res) => {
   try {
     const { email } = req.body;
@@ -271,9 +398,13 @@ router.post('/manual-verify-email', async (req, res) => {
       });
     }
 
-    // Update user as verified
+    console.log('🔄 Manual verification request for:', email);
+
+    // Update user as verified regardless of Firebase status
     const result = await pool.query(
-      `UPDATE users SET email_verified = true WHERE email = $1 RETURNING id, email, email_verified`,
+      `UPDATE users SET email_verified = true, updated_at = NOW() 
+       WHERE email = $1 
+       RETURNING id, email, email_verified, firebase_uid`,
       [email]
     );
 
@@ -284,13 +415,15 @@ router.post('/manual-verify-email', async (req, res) => {
       });
     }
 
-    console.log('✅ Manual email verification completed for:', email);
+    const user = result.rows[0];
+    console.log('✅ Manual verification completed for:', email);
 
     res.json({
       success: true,
       message: '✅ Email manually verified successfully! You can now login.',
-      user: result.rows[0]
+      user: user
     });
+
   } catch (err) {
     console.error('❌ Manual verification error:', err.message);
     res.status(500).json({ 
@@ -401,7 +534,7 @@ router.get('/verification-status/:email', async (req, res) => {
   }
 });
 
-// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase) - FIXED VERSION
+// ✅ DELETE USER ACCOUNT (from both Neon DB and Firebase)
 router.delete('/user', async (req, res) => {
   const client = await pool.connect();
   
@@ -499,7 +632,7 @@ router.delete('/user', async (req, res) => {
   }
 });
 
-// ✅ ADMIN - DELETE USER BY ID - FIXED VERSION
+// ✅ ADMIN - DELETE USER BY ID
 router.delete('/admin/user/:userId', async (req, res) => {
   const client = await pool.connect();
   
@@ -589,7 +722,7 @@ router.delete('/admin/user/:userId', async (req, res) => {
   }
 });
 
-// ✅ GET USER BY EMAIL (for verification/deletion purposes)
+// ✅ GET USER BY EMAIL
 router.get('/user-by-email/:email', async (req, res) => {
   try {
     const email = req.params.email;
@@ -657,173 +790,6 @@ router.get('/me', async (req, res) => {
       success: false,
       message: 'Invalid token' 
     });
-  }
-});
-
-// ✅ CHECK USER EXISTS
-router.get('/check-user/:email', async (req, res) => {
-  try {
-    const email = req.params.email;
-
-    const result = await pool.query(
-      'SELECT id, email, username, email_verified FROM users WHERE email = $1',
-      [email]
-    );
-
-    if (result.rows.length === 0) {
-      return res.status(404).json({ 
-        success: false,
-        exists: false,
-        message: 'User not found' 
-      });
-    }
-
-    res.json({
-      success: true,
-      exists: true,
-      user: result.rows[0]
-    });
-
-  } catch (err) {
-    console.error('❌ Check user error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      exists: false,
-      message: 'Server error during user check' 
-    });
-  }
-});
-
-// ✅ UPDATE USER PROFILE
-router.put('/profile', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    const { userId, full_name, username } = req.body;
-
-    if (!userId) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID is required.' 
-      });
-    }
-
-    await client.query('BEGIN');
-
-    // Update user profile
-    const result = await client.query(
-      `UPDATE users 
-       SET full_name = COALESCE($1, full_name), 
-           username = COALESCE($2, username),
-           updated_at = NOW()
-       WHERE id = $3
-       RETURNING id, full_name, email, username, email_verified, created_at, updated_at`,
-      [full_name, username, userId]
-    );
-
-    if (result.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found' 
-      });
-    }
-
-    await client.query('COMMIT');
-
-    res.json({
-      success: true,
-      message: '✅ Profile updated successfully!',
-      user: result.rows[0]
-    });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('❌ Profile update error:', err.message);
-    
-    if (err.message.includes('unique constraint')) {
-      return res.status(409).json({ 
-        success: false,
-        message: 'Username already exists' 
-      });
-    }
-    
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during profile update: ' + err.message 
-    });
-  } finally {
-    client.release();
-  }
-});
-
-// ✅ CHANGE PASSWORD
-router.put('/change-password', async (req, res) => {
-  const client = await pool.connect();
-  
-  try {
-    const { userId, currentPassword, newPassword } = req.body;
-
-    if (!userId || !currentPassword || !newPassword) {
-      return res.status(400).json({ 
-        success: false,
-        message: 'User ID, current password, and new password are required.' 
-      });
-    }
-
-    await client.query('BEGIN');
-
-    // Get user with current password
-    const userResult = await client.query(
-      'SELECT * FROM users WHERE id = $1',
-      [userId]
-    );
-
-    if (userResult.rows.length === 0) {
-      await client.query('ROLLBACK');
-      return res.status(404).json({ 
-        success: false,
-        message: 'User not found' 
-      });
-    }
-
-    const user = userResult.rows[0];
-
-    // Verify current password
-    const validPassword = await bcrypt.compare(currentPassword, user.password);
-    if (!validPassword) {
-      await client.query('ROLLBACK');
-      return res.status(401).json({ 
-        success: false,
-        message: 'Current password is incorrect' 
-      });
-    }
-
-    // Hash new password
-    const hashedNewPassword = await bcrypt.hash(newPassword, 10);
-
-    // Update password
-    await client.query(
-      'UPDATE users SET password = $1, updated_at = NOW() WHERE id = $2',
-      [hashedNewPassword, userId]
-    );
-
-    await client.query('COMMIT');
-
-    res.json({
-      success: true,
-      message: '✅ Password changed successfully!'
-    });
-
-  } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('❌ Change password error:', err.message);
-    res.status(500).json({ 
-      success: false,
-      message: 'Server error during password change: ' + err.message 
-    });
-  } finally {
-    client.release();
   }
 });
 
