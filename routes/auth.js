@@ -1,4 +1,4 @@
-// routes/auth.js - COMPLETE REVISED VERSION
+// routes/auth.js - COMPLETE REVISED VERSION WITH MEDICAL INFO CHECK
 import express from 'express';
 import bcrypt from 'bcrypt';
 import jwt from 'jsonwebtoken';
@@ -134,6 +134,16 @@ router.post('/login', async (req, res) => {
       }
     }
 
+    // ✅ CHECK IF USER HAS MEDICAL INFO
+    const medicalInfoResult = await pool.query(
+      `SELECT * FROM medical_info WHERE user_id = $1`,
+      [user.id]
+    );
+
+    const hasMedicalInfo = medicalInfoResult.rows.length > 0 && 
+                          medicalInfoResult.rows[0].full_name && 
+                          medicalInfoResult.rows[0].full_name !== 'Not provided';
+
     const token = jwt.sign(
       { 
         id: user.id, 
@@ -145,6 +155,7 @@ router.post('/login', async (req, res) => {
     );
 
     console.log('✅ Login successful for:', email);
+    console.log('🏥 User has medical info:', hasMedicalInfo);
 
     res.json({
       success: true,
@@ -156,7 +167,8 @@ router.post('/login', async (req, res) => {
         email: user.email,
         username: user.username,
         email_verified: true
-      }
+      },
+      hasMedicalInfo: hasMedicalInfo // ✅ ADD THIS FIELD
     });
 
   } catch (err) {
