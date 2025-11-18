@@ -364,7 +364,8 @@ router.post('/login', async (req, res) => {
         solutions: [
           'Check your email for verification link',
           'Use POST /api/auth/resend-verification to resend email',
-          'Use POST /api/auth/super-verify for instant verification'
+          'Use POST /api/auth/super-verify for instant verification',
+          'Use POST /api/auth/force-verify-firebase to sync with Firebase'
         ],
         instantVerify: 'POST /api/auth/super-verify with: { "email": "' + user.email + '" }'
       });
@@ -401,6 +402,122 @@ router.post('/login', async (req, res) => {
     res.status(500).json({ 
       success: false,
       message: 'Server error during login' 
+    });
+  }
+});
+
+// ==================== FIREBASE SYNC ENDPOINTS ====================
+
+// ✅ FORCE VERIFY BY EMAIL (with Firebase check)
+router.post('/force-verify-firebase', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
+      });
+    }
+
+    console.log('🔧 Force verify with Firebase check for:', email);
+
+    // Get user from database
+    const userResult = await pool.query(
+      'SELECT id, email, firebase_uid FROM users WHERE email = $1',
+      [email]
+    );
+
+    if (userResult.rows.length === 0) {
+      return res.status(404).json({ 
+        success: false,
+        message: 'User not found' 
+      });
+    }
+
+    const user = userResult.rows[0];
+    
+    if (!user.firebase_uid) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'No Firebase UID found for user' 
+      });
+    }
+
+    // Use Firebase service to force verify
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    const result = await firebaseEmailService.forceVerifyByFirebaseUid(user.firebase_uid);
+
+    if (result.success) {
+      res.json({
+        success: true,
+        message: '✅ Force verification successful! User can now login.',
+        email: user.email,
+        firebaseUid: user.firebase_uid,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: result.message || 'Force verification failed'
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Force verify Firebase error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
+    });
+  }
+});
+
+// ✅ SYNC ALL USERS WITH FIREBASE
+router.post('/sync-all-firebase', async (req, res) => {
+  try {
+    console.log('🔄 Syncing all users with Firebase verification status...');
+    
+    // Get all users with Firebase UIDs
+    const usersResult = await pool.query(
+      'SELECT id, email, firebase_uid, email_verified FROM users WHERE firebase_uid IS NOT NULL'
+    );
+
+    const { default: firebaseEmailService } = await import('../services/firebase-email-service.js');
+    let syncedCount = 0;
+    let errors = [];
+
+    for (const user of usersResult.rows) {
+      try {
+        const isVerified = await firebaseEmailService.checkFirebaseVerification(user.firebase_uid);
+        
+        if (isVerified && !user.email_verified) {
+          // Update database to match Firebase
+          await pool.query(
+            'UPDATE users SET email_verified = true, updated_at = NOW() WHERE id = $1',
+            [user.id]
+          );
+          syncedCount++;
+          console.log(`✅ Synced user: ${user.email}`);
+        }
+      } catch (error) {
+        errors.push({ email: user.email, error: error.message });
+        console.log(`❌ Error syncing user ${user.email}:`, error.message);
+      }
+    }
+
+    res.json({
+      success: true,
+      message: `✅ Sync completed! ${syncedCount} users updated.`,
+      synced: syncedCount,
+      total: usersResult.rows.length,
+      errors: errors
+    });
+
+  } catch (err) {
+    console.error('❌ Sync all Firebase error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error: ' + err.message 
     });
   }
 });
