@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - FIXED VERSION WITH WORKING FIREBASE INTEGRATION
+// services/firebase-email-service.js - FIXED VERSION WITH EMAIL SENDING
 import https from 'https';
 import pool from '../db.js';
 
@@ -42,6 +42,22 @@ class FirebaseEmailService {
           };
         } else {
           console.log('❌ Email sending failed, but Firebase user was created');
+          
+          // Try alternative method to send verification
+          console.log('🔄 Trying alternative verification method...');
+          const altResult = await this.sendVerificationAlternative(userResult.localId, email);
+          
+          if (altResult.success) {
+            console.log('✅ Alternative verification method worked!');
+            this.startVerificationPolling(email, userResult.localId, userId);
+            return { 
+              success: true, 
+              email: email,
+              firebaseUid: userResult.localId,
+              message: 'Verification process started. Please check your email.'
+            };
+          }
+          
           return { 
             success: false, 
             error: 'Email sending failed',
@@ -64,6 +80,25 @@ class FirebaseEmailService {
         error: error.message,
         message: 'Use /api/auth/super-verify to verify manually'
       };
+    }
+  }
+
+  // Alternative method to send verification email
+  async sendVerificationAlternative(firebaseUid, email) {
+    try {
+      console.log('🔄 Using alternative verification method for:', email);
+      
+      // Get a fresh ID token
+      const signInResult = await this.signInWithCustomToken(firebaseUid);
+      if (signInResult && signInResult.idToken) {
+        // Try sending verification with fresh token
+        const emailResult = await this.sendVerificationToUser(signInResult.idToken, email);
+        return { success: !!emailResult };
+      }
+      return { success: false };
+    } catch (error) {
+      console.log('❌ Alternative method failed:', error.message);
+      return { success: false };
     }
   }
 
@@ -98,7 +133,6 @@ class FirebaseEmailService {
         
         res.on('end', () => {
           console.log('📡 Firebase API response status:', res.statusCode);
-          console.log('📡 Firebase API response data:', data);
           
           try {
             const parsedData = JSON.parse(data);
@@ -215,9 +249,21 @@ class FirebaseEmailService {
     return new Promise((resolve, reject) => {
       console.log('📨 Sending verification email to:', email);
       
+      if (!idToken) {
+        console.log('❌ No ID token provided for email verification');
+        reject(new Error('No ID token provided'));
+        return;
+      }
+
       const emailData = JSON.stringify({
         requestType: 'VERIFY_EMAIL',
         idToken: idToken
+      });
+
+      console.log('📤 Email verification request data:', {
+        requestType: 'VERIFY_EMAIL',
+        idTokenLength: idToken.length,
+        email: email
       });
 
       const options = {
@@ -245,9 +291,29 @@ class FirebaseEmailService {
             const parsedData = JSON.parse(data);
             if (res.statusCode === 200) {
               console.log('✅ Email verification sent SUCCESSFULLY to:', email);
+              console.log('📧 Response details:', {
+                email: parsedData.email,
+                requestType: parsedData.requestType
+              });
               resolve(parsedData);
             } else {
-              console.log('❌ Email verification sending FAILED:', parsedData.error?.message);
+              console.log('❌ Email verification sending FAILED:', {
+                error: parsedData.error,
+                message: parsedData.error?.message,
+                code: parsedData.error?.code
+              });
+              
+              // Check for specific Firebase errors
+              if (parsedData.error) {
+                if (parsedData.error.message.includes('INVALID_ID_TOKEN')) {
+                  console.log('🔑 ID token is invalid or expired');
+                } else if (parsedData.error.message.includes('USER_NOT_FOUND')) {
+                  console.log('👤 User not found in Firebase');
+                } else if (parsedData.error.message.includes('TOO_MANY_ATTEMPTS_TRY_LATER')) {
+                  console.log('🚫 Too many attempts, please try again later');
+                }
+              }
+              
               reject(new Error(parsedData.error?.message || 'Email verification failed'));
             }
           } catch (error) {
@@ -258,12 +324,29 @@ class FirebaseEmailService {
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error in email sending');
+        console.log('❌ Network error in email sending:', error.message);
         reject(error);
       });
 
+      req.setTimeout(15000, () => {
+        console.log('❌ Email sending request timeout');
+        req.destroy();
+        reject(new Error('Email sending timeout'));
+      });
+
+      console.log('📤 Sending verification email request...');
       req.write(emailData);
       req.end();
+    });
+  }
+
+  // New method to sign in with custom token (alternative approach)
+  async signInWithCustomToken(firebaseUid) {
+    return new Promise((resolve, reject) => {
+      // This would require Firebase Admin SDK to generate custom tokens
+      // For now, we'll return null since we don't have admin setup
+      console.log('⚠️ Custom token sign-in not implemented');
+      resolve(null);
     });
   }
 
@@ -495,7 +578,65 @@ class FirebaseEmailService {
     }
   }
 
-  // NEW METHOD: Test Firebase connection
+  // NEW METHOD: Manually trigger email verification for existing user
+  async triggerEmailVerificationManually(email) {
+    try {
+      console.log('🔧 Manually triggering email verification for:', email);
+      
+      // Get user from database
+      const userResult = await pool.query(
+        'SELECT id, firebase_uid FROM users WHERE email = $1',
+        [email]
+      );
+
+      if (userResult.rows.length === 0) {
+        return { success: false, message: 'User not found' };
+      }
+
+      const user = userResult.rows[0];
+      
+      if (!user.firebase_uid) {
+        return { success: false, message: 'No Firebase UID found for user' };
+      }
+
+      // Sign in the user to get a fresh ID token
+      const tempPassword = 'temp-password-' + Date.now();
+      let signInResult;
+      
+      try {
+        // First try to sign in (user might have different password)
+        signInResult = await this.signInFirebaseUser(email, tempPassword);
+      } catch (signInError) {
+        console.log('❌ Sign in failed, user might have different password');
+        return { 
+          success: false, 
+          message: 'Cannot send verification email. User password in Firebase might be different.',
+          solution: 'Ask user to reset password in Firebase or use manual verification'
+        };
+      }
+
+      if (signInResult && signInResult.idToken) {
+        // Send verification email with fresh token
+        const emailResult = await this.sendVerificationToUser(signInResult.idToken, email);
+        
+        if (emailResult) {
+          console.log('✅ Manual email verification triggered for:', email);
+          return { 
+            success: true, 
+            message: 'Verification email sent successfully. Please check your inbox.' 
+          };
+        }
+      }
+
+      return { success: false, message: 'Failed to trigger verification email' };
+
+    } catch (error) {
+      console.log('❌ Manual email trigger error:', error.message);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // Test Firebase connection
   async testFirebaseConnection() {
     try {
       console.log('🧪 Testing Firebase connection...');
