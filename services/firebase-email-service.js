@@ -1,4 +1,4 @@
-// services/firebase-email-service.js - COMPLETE REVISED WITH SYNC SUPPORT
+// services/firebase-email-service.js - WORKING VERSION WITH SYNC
 import https from 'https';
 import pool from '../db.js';
 
@@ -18,24 +18,17 @@ class FirebaseEmailService {
       if (userResult && userResult.localId) {
         console.log('✅ Firebase user created successfully');
         
-        // Step 2: Store Firebase UID in database (simple query)
+        // Step 2: Store Firebase UID in database
         console.log('🔄 Step 2: Storing Firebase UID...');
         await this.storeFirebaseUidSimple(userId, userResult.localId);
         
-        // Step 3: Send verification email (MAIN FOCUS)
+        // Step 3: Send verification email
         console.log('🔄 Step 3: Sending verification email...');
         if (userResult.idToken) {
           const emailResult = await this.sendVerificationToUser(userResult.idToken);
           
           if (emailResult && emailResult.email) {
             console.log('🎉 ✅ VERIFICATION EMAIL SENT SUCCESSFULLY TO:', email);
-            
-            // User created, email sent - set as unverified until they click link
-            await pool.query(
-              'UPDATE users SET email_verified = false WHERE id = $1',
-              [userId]
-            );
-            
             return { 
               success: true, 
               email: email,
@@ -43,16 +36,8 @@ class FirebaseEmailService {
               message: 'Registration successful! Please check your email for verification link.',
               emailSent: true
             };
-          } else {
-            console.log('❌ Email sending failed but user created');
           }
         }
-        
-        // If email failed, still complete registration but mark as unverified
-        await pool.query(
-          'UPDATE users SET email_verified = false WHERE id = $1',
-          [userId]
-        );
         
         return { 
           success: true, 
@@ -64,30 +49,14 @@ class FirebaseEmailService {
         
       } else {
         console.log('❌ Firebase user creation failed');
-        // Still create user in database but unverified
-        await pool.query(
-          'UPDATE users SET email_verified = false WHERE id = $1',
-          [userId]
-        );
-        
         return { 
           success: false, 
           error: 'Firebase user creation failed',
-          message: 'Registration completed but email verification unavailable.'
+          message: 'Registration failed.'
         };
       }
     } catch (error) {
       console.log('❌ Email service error:', error.message);
-      // On error, still create user but unverified
-      try {
-        await pool.query(
-          'UPDATE users SET email_verified = false WHERE id = $1',
-          [userId]
-        );
-      } catch (dbError) {
-        console.log('⚠️ Database update error:', dbError.message);
-      }
-      
       return { 
         success: false, 
         error: error.message,
@@ -117,8 +86,6 @@ class FirebaseEmailService {
         timeout: 15000
       };
 
-      console.log('📡 Making Firebase API request...');
-      
       const req = https.request(options, (res) => {
         let data = '';
         
@@ -128,7 +95,6 @@ class FirebaseEmailService {
         
         res.on('end', () => {
           console.log('📡 Firebase API response status:', res.statusCode);
-          console.log('📡 Firebase API response data:', data);
           
           try {
             const parsedData = JSON.parse(data);
@@ -139,14 +105,12 @@ class FirebaseEmailService {
             } else {
               console.log('❌ Firebase user creation FAILED:', parsedData.error);
               
-              // If email already exists, try to sign in
               if (parsedData.error && parsedData.error.message && 
                   parsedData.error.message.includes('EMAIL_EXISTS')) {
                 console.log('🔄 Email exists, attempting sign in...');
                 this.signInFirebaseUser(email, password)
                   .then(resolve)
                   .catch(signInError => {
-                    console.log('❌ Sign in failed:', signInError.message);
                     reject(new Error('Email exists but sign in failed'));
                   });
               } else {
@@ -154,19 +118,16 @@ class FirebaseEmailService {
               }
             }
           } catch (error) {
-            console.log('❌ JSON parse error');
             reject(new Error('Failed to parse Firebase response'));
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error:', error.message);
         reject(new Error('Network error: ' + error.message));
       });
 
       req.on('timeout', () => {
-        console.log('❌ Firebase request timeout');
         req.destroy();
         reject(new Error('Firebase request timeout'));
       });
@@ -179,10 +140,8 @@ class FirebaseEmailService {
   async sendVerificationToUser(idToken) {
     return new Promise((resolve, reject) => {
       console.log('📨 SENDING VERIFICATION EMAIL...');
-      console.log('📨 Using ID Token:', idToken ? 'Present' : 'Missing');
       
       if (!idToken) {
-        console.log('❌ No ID token available for email sending');
         reject(new Error('No ID token available'));
         return;
       }
@@ -203,8 +162,6 @@ class FirebaseEmailService {
         timeout: 15000
       };
 
-      console.log('📡 Making email API request...');
-      
       const req = https.request(options, (res) => {
         let data = '';
         
@@ -214,7 +171,6 @@ class FirebaseEmailService {
         
         res.on('end', () => {
           console.log('📡 Email API response status:', res.statusCode);
-          console.log('📡 Email API response data:', data);
           
           try {
             const parsedData = JSON.parse(data);
@@ -222,23 +178,19 @@ class FirebaseEmailService {
               console.log('🎉 ✅ EMAIL VERIFICATION SENT SUCCESSFULLY');
               resolve(parsedData);
             } else {
-              console.log('❌ Email verification sending FAILED:', parsedData.error);
               reject(new Error(parsedData.error?.message || 'Email sending failed'));
             }
           } catch (error) {
-            console.log('❌ JSON parse error in email response');
             reject(new Error('Failed to parse email response'));
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error in email sending:', error.message);
         reject(new Error('Network error: ' + error.message));
       });
 
       req.on('timeout', () => {
-        console.log('❌ Email sending request timeout');
         req.destroy();
         reject(new Error('Email sending timeout'));
       });
@@ -282,10 +234,9 @@ class FirebaseEmailService {
           try {
             const parsedData = JSON.parse(data);
             if (res.statusCode === 200) {
-              console.log('✅ Firebase sign in SUCCESS');
+              console.log('✅ Firebase sign in SUCCESS - Email verified:', parsedData.emailVerified);
               resolve(parsedData);
             } else {
-              console.log('❌ Firebase sign in FAILED:', parsedData.error);
               reject(new Error(parsedData.error?.message || 'Sign in failed'));
             }
           } catch (error) {
@@ -308,7 +259,6 @@ class FirebaseEmailService {
     });
   }
 
-  // Simple storage without updated_at to avoid database errors
   async storeFirebaseUidSimple(userId, firebaseUid) {
     try {
       const result = await pool.query(
@@ -319,62 +269,27 @@ class FirebaseEmailService {
       return result;
     } catch (error) {
       console.log('❌ Error storing Firebase UID:', error.message);
-      // Don't throw - just log the error
     }
   }
 
-  // ✅ CHECK FIREBASE USER VERIFICATION STATUS
-  async checkFirebaseUserVerification(email, password) {
-    try {
-      console.log('🔍 Checking Firebase verification status for:', email);
-      
-      // First, sign in to get the user's current status
-      const signInResult = await this.signInFirebaseUser(email, password);
-      
-      if (signInResult && signInResult.emailVerified) {
-        console.log('✅ User is verified in Firebase:', email);
-        return {
-          success: true,
-          emailVerified: true,
-          localId: signInResult.localId,
-          email: signInResult.email
-        };
-      } else {
-        console.log('❌ User not verified in Firebase:', email);
-        return {
-          success: true,
-          emailVerified: false,
-          localId: signInResult.localId,
-          email: signInResult.email
-        };
-      }
-    } catch (error) {
-      console.log('❌ Error checking Firebase verification:', error.message);
-      return {
-        success: false,
-        error: error.message
-      };
-    }
-  }
-
-  // ✅ GET FIREBASE USER BY EMAIL (Admin SDK alternative)
-  async getFirebaseUserByEmail(email) {
+  // ✅ VERIFY OOB CODE (When user clicks email link)
+  async verifyOobCode(oobCode) {
     return new Promise((resolve, reject) => {
-      console.log('🔍 Getting Firebase user by email:', email);
+      console.log('🔐 Verifying OOB code from email link...');
       
-      const userData = JSON.stringify({
-        email: email
+      const verifyData = JSON.stringify({
+        oobCode: oobCode
       });
 
       const options = {
         hostname: 'identitytoolkit.googleapis.com',
-        path: `/v1/accounts:lookup?key=${this.apiKey}`,
+        path: `/v1/accounts:update?key=${this.apiKey}`,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'Content-Length': Buffer.byteLength(userData)
+          'Content-Length': Buffer.byteLength(verifyData)
         },
-        timeout: 10000
+        timeout: 15000
       };
 
       const req = https.request(options, (res) => {
@@ -385,87 +300,70 @@ class FirebaseEmailService {
         });
         
         res.on('end', () => {
-          console.log('📡 Firebase user lookup response:', res.statusCode);
+          console.log('📡 OOB verification response status:', res.statusCode);
           
           try {
             const parsedData = JSON.parse(data);
-            if (res.statusCode === 200 && parsedData.users && parsedData.users.length > 0) {
-              const user = parsedData.users[0];
-              console.log('✅ Firebase user found - verified:', user.emailVerified);
-              resolve({
-                success: true,
-                emailVerified: user.emailVerified,
-                localId: user.localId,
-                email: user.email
+            if (res.statusCode === 200) {
+              console.log('✅ OOB code verification SUCCESS - Email verified:', parsedData.email);
+              resolve({ 
+                success: true, 
+                email: parsedData.email,
+                emailVerified: true 
               });
             } else {
-              console.log('❌ Firebase user not found');
-              resolve({
-                success: false,
-                error: 'User not found in Firebase'
+              console.log('❌ OOB code verification FAILED:', parsedData.error);
+              resolve({ 
+                success: false, 
+                error: parsedData.error?.message || 'OOB code verification failed' 
               });
             }
           } catch (error) {
-            console.log('❌ JSON parse error in user lookup');
-            resolve({
-              success: false,
-              error: 'Failed to parse user lookup response'
-            });
+            resolve({ success: false, error: 'Failed to parse OOB verification response' });
           }
         });
       });
 
       req.on('error', (error) => {
-        console.log('❌ Network error in user lookup:', error.message);
-        resolve({
-          success: false,
-          error: 'Network error: ' + error.message
-        });
+        resolve({ success: false, error: 'Network error: ' + error.message });
       });
 
       req.on('timeout', () => {
-        console.log('❌ User lookup timeout');
-        resolve({
-          success: false,
-          error: 'User lookup timeout'
-        });
+        resolve({ success: false, error: 'OOB verification timeout' });
       });
 
-      req.write(userData);
+      req.write(verifyData);
       req.end();
     });
   }
 
-  // ✅ FORCE SYNC VERIFICATION STATUS
-  async forceSyncVerification(email, password) {
+  // ✅ CHECK USER VERIFICATION STATUS
+  async checkUserVerification(email, password) {
     try {
-      console.log('🔄 Force syncing verification for:', email);
+      console.log('🔍 Checking verification status for:', email);
       
-      // Check current Firebase verification status
-      const verificationCheck = await this.checkFirebaseUserVerification(email, password);
+      const signInResult = await this.signInFirebaseUser(email, password);
       
-      if (verificationCheck.success && verificationCheck.emailVerified) {
-        console.log('✅ User is verified in Firebase, updating database...');
+      if (signInResult && signInResult.emailVerified) {
+        console.log('✅ User is verified in Firebase');
         
-        // Update database via API call to our own backend
-        const updateResult = await this.updateDatabaseVerification(email);
+        // Update database
+        await this.updateDatabaseVerification(email);
         
         return {
           success: true,
           emailVerified: true,
-          databaseUpdated: updateResult.success,
-          message: 'Verification synced successfully'
+          message: 'Email is verified'
         };
       } else {
-        console.log('❌ User not verified in Firebase yet');
         return {
-          success: false,
+          success: true,
           emailVerified: false,
-          message: 'Email not verified in Firebase'
+          message: 'Email not verified yet'
         };
       }
     } catch (error) {
-      console.log('❌ Force sync error:', error.message);
+      console.log('❌ Error checking verification:', error.message);
       return {
         success: false,
         error: error.message
@@ -485,7 +383,7 @@ class FirebaseEmailService {
         console.log('✅ Database verification updated for:', email);
         return { success: true, user: result.rows[0] };
       } else {
-        console.log('❌ User not found in database for update:', email);
+        console.log('❌ User not found in database:', email);
         return { success: false, error: 'User not found' };
       }
     } catch (error) {
@@ -494,11 +392,9 @@ class FirebaseEmailService {
     }
   }
 
-  // Test Firebase connection
+  // Test methods
   async testFirebaseConnection() {
     try {
-      console.log('🧪 Testing Firebase connection...');
-      
       const testData = JSON.stringify({
         email: "test@example.com",
         password: "testpassword123",
@@ -554,37 +450,6 @@ class FirebaseEmailService {
       });
     } catch (error) {
       return { success: false, error: error.message };
-    }
-  }
-
-  // Test email delivery specifically
-  async testEmailDelivery(email) {
-    try {
-      console.log('🧪 Testing email delivery to:', email);
-      
-      // Create a temporary user
-      const tempPassword = 'test123456';
-      const userResult = await this.createFirebaseUser(email, tempPassword);
-      
-      if (userResult && userResult.idToken) {
-        const emailResult = await this.sendVerificationToUser(userResult.idToken);
-        return {
-          success: true,
-          message: 'Test email sent successfully!',
-          email: email,
-          details: emailResult
-        };
-      } else {
-        return {
-          success: false,
-          message: 'Failed to create test user'
-        };
-      }
-    } catch (error) {
-      return {
-        success: false,
-        message: 'Test failed: ' + error.message
-      };
     }
   }
 }
