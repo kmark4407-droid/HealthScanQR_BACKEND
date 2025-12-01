@@ -16,37 +16,41 @@ class FirebaseEmailService {
       const userResult = await this.createFirebaseUser(email, password);
       
       if (userResult && userResult.localId) {
-        console.log('✅ Firebase user created successfully');
+        console.log('✅ Firebase user handled successfully');
         
-        // Step 2: Store Firebase UID in database
-        console.log('🔄 Step 2: Storing Firebase UID...');
-        await this.storeFirebaseUid(userId, userResult.localId);
+        // Step 2: Store Firebase UID in database (if it's a real ID)
+        if (!userResult.localId.startsWith('existing-user-')) {
+          console.log('🔄 Step 2: Storing Firebase UID...');
+          await this.storeFirebaseUid(userId, userResult.localId);
+        }
         
         // Step 3: Send verification email
         console.log('🔄 Step 3: Sending verification email...');
-        if (userResult.idToken) {
-          const emailResult = await this.sendVerificationToUser(userResult.idToken);
-          
-          if (emailResult && emailResult.email) {
-            console.log('🎉 ✅ VERIFICATION EMAIL SENT SUCCESSFULLY TO:', email);
-            return { 
-              success: true, 
-              email: email,
-              firebaseUid: userResult.localId,
-              message: 'Registration successful! Please check your email for verification link.',
-              emailSent: true
-            };
-          } else {
-            console.log('❌ Email sending failed but user created');
-          }
+        const emailResult = await this.sendVerificationToUser(userResult.idToken, email);
+        
+        if (emailResult && emailResult.email) {
+          console.log('🎉 ✅ VERIFICATION EMAIL SENT SUCCESSFULLY TO:', email);
+          return { 
+            success: true, 
+            email: email,
+            firebaseUid: userResult.localId,
+            message: 'Registration successful! Please check your email for verification link.',
+            emailSent: true,
+            existingUser: userResult.existingUser || false
+          };
+        } else {
+          console.log('⚠️ Email sending may have issues but registration continues');
         }
         
         return { 
           success: true, 
           email: email,
           firebaseUid: userResult.localId,
-          message: 'Registration completed but email verification failed. Please use resend verification.',
-          emailSent: false
+          message: userResult.existingUser 
+            ? 'Registration complete! If you don\'t receive verification email, please use "Resend Verification" option.'
+            : 'Registration completed but email verification may have issues.',
+          emailSent: userResult.verificationSent || false,
+          existingUser: userResult.existingUser || false
         };
         
       } else {
@@ -107,15 +111,36 @@ class FirebaseEmailService {
             } else {
               console.log('❌ Firebase user creation FAILED:', parsedData.error);
               
-              // If email already exists, try to sign in
+              // If email already exists, send verification email directly
               if (parsedData.error && parsedData.error.message && 
                   parsedData.error.message.includes('EMAIL_EXISTS')) {
-                console.log('🔄 Email exists, attempting sign in...');
-                this.signInFirebaseUser(email, password)
-                  .then(resolve)
-                  .catch(signInError => {
-                    console.log('❌ Sign in failed:', signInError.message);
-                    reject(new Error('Email exists but sign in failed'));
+                console.log('📧 Email exists in Firebase - sending verification directly...');
+                
+                // Send verification email without requiring sign in
+                this.sendVerificationToExistingUser(email)
+                  .then(verificationResult => {
+                    console.log('✅ Verification email sent to existing user');
+                    // Return a mock user object so registration can continue
+                    resolve({
+                      localId: 'existing-user-' + Date.now(),
+                      idToken: null,
+                      email: email,
+                      emailVerified: false,
+                      existingUser: true,
+                      verificationSent: true
+                    });
+                  })
+                  .catch(verificationError => {
+                    console.log('❌ Failed to send verification to existing user:', verificationError.message);
+                    // Still allow registration to continue
+                    resolve({
+                      localId: 'existing-user-fallback-' + Date.now(),
+                      idToken: null,
+                      email: email,
+                      emailVerified: false,
+                      existingUser: true,
+                      verificationSent: false
+                    });
                   });
               } else {
                 reject(new Error(parsedData.error?.message || 'Firebase user creation failed'));
@@ -144,9 +169,81 @@ class FirebaseEmailService {
     });
   }
 
-  async sendVerificationToUser(idToken) {
+  // NEW METHOD: Send verification to existing user
+  async sendVerificationToExistingUser(email) {
+    return new Promise((resolve, reject) => {
+      console.log('📨 Sending verification to existing user:', email);
+      
+      const emailData = JSON.stringify({
+        requestType: 'VERIFY_EMAIL',
+        email: email
+      });
+
+      const options = {
+        hostname: 'identitytoolkit.googleapis.com',
+        path: `/v1/accounts:sendOobCode?key=${this.apiKey}`,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(emailData)
+        },
+        timeout: 15000
+      };
+
+      const req = https.request(options, (res) => {
+        let data = '';
+        
+        res.on('data', (chunk) => {
+          data += chunk;
+        });
+        
+        res.on('end', () => {
+          console.log('📡 Direct verification response status:', res.statusCode);
+          
+          try {
+            const parsedData = JSON.parse(data);
+            if (res.statusCode === 200) {
+              console.log('✅ Verification email sent to existing user');
+              resolve(parsedData);
+            } else {
+              console.log('❌ Direct verification failed:', parsedData.error);
+              reject(new Error(parsedData.error?.message || 'Direct verification failed'));
+            }
+          } catch (error) {
+            console.log('❌ JSON parse error in direct verification');
+            reject(new Error('Failed to parse direct verification response'));
+          }
+        });
+      });
+
+      req.on('error', (error) => {
+        console.log('❌ Network error in direct verification:', error.message);
+        reject(new Error('Network error: ' + error.message));
+      });
+
+      req.on('timeout', () => {
+        console.log('❌ Direct verification timeout');
+        req.destroy();
+        reject(new Error('Direct verification timeout'));
+      });
+
+      req.write(emailData);
+      req.end();
+    });
+  }
+
+  async sendVerificationToUser(idToken, email = null) {
     return new Promise((resolve, reject) => {
       console.log('📨 SENDING VERIFICATION EMAIL...');
+      
+      // If no ID token but we have email, use email method
+      if (!idToken && email) {
+        console.log('🔄 Using email-based verification (no ID token)');
+        this.sendVerificationToExistingUser(email)
+          .then(resolve)
+          .catch(reject);
+        return;
+      }
       
       if (!idToken) {
         console.log('❌ No ID token available for email sending');
