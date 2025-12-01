@@ -16,23 +16,86 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// CORS Configuration
-app.use(cors({
-  origin: [
-    'http://localhost:4200', 
-    'https://healthscanqr2025.vercel.app',
-    'https://health-scan-qr2025.vercel.app'
-  ],
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
-}));
+// =============================================
+// 🎯 FIXED CORS CONFIGURATION FOR MOBILE
+// =============================================
 
-app.options('*', cors());
+// CORS Configuration - EXPANDED FOR MOBILE SUPPORT
+const corsOptions = {
+  origin: function (origin, callback) {
+    // Allow requests with no origin (like mobile apps or curl requests)
+    if (!origin) return callback(null, true);
+    
+    const allowedOrigins = [
+      'http://localhost:4200',
+      'https://healthscanqr2025.vercel.app',
+      'https://health-scan-qr2025.vercel.app',
+      'https://healthscanqr.vercel.app',
+      'https://healthscanqr2025-git-main-healthscanqrs-projects.vercel.app',
+      'https://healthscanqr2025-*.vercel.app', // Wildcard pattern
+      // For local mobile testing
+      'http://localhost',
+      'http://localhost:8100',
+      'capacitor://localhost',
+      'ionic://localhost'
+    ];
+    
+    // Check if the origin matches any allowed origin or pattern
+    if (allowedOrigins.some(allowed => {
+      if (allowed.includes('*')) {
+        // Handle wildcard patterns
+        const regex = new RegExp(allowed.replace(/\*/g, '.*'));
+        return regex.test(origin);
+      }
+      return allowed === origin;
+    })) {
+      callback(null, true);
+    } else {
+      console.log(`🔒 CORS blocked origin: ${origin}`);
+      callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+    'X-Content-Type-Options'
+  ],
+  exposedHeaders: ['Content-Disposition'],
+  optionsSuccessStatus: 200,
+  maxAge: 86400 // 24 hours
+};
+
+app.use(cors(corsOptions));
+
+// Handle preflight requests globally
+app.options('*', (req, res) => {
+  console.log('🛫 Preflight request received for:', req.method, req.url);
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With, Accept, Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  res.setHeader('Access-Control-Max-Age', '86400');
+  res.status(200).end();
+});
 
 // Middleware
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+app.use(express.json({ limit: '50mb' })); // Increased for base64 images
+app.use(express.urlencoded({ extended: true, limit: '50mb' }));
+
+// Log all requests for debugging
+app.use((req, res, next) => {
+  console.log(`${req.method} ${req.url}`);
+  console.log('Origin:', req.headers.origin);
+  console.log('User-Agent:', req.headers['user-agent']);
+  next();
+});
 
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -43,12 +106,14 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 // Root route - Fix the 404 error
 app.get('/', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({ 
     status: 'OK',
     message: 'HealthScan QR API Server is running! 🚀',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     version: '1.0.0',
+    cors: '✅ ENABLED for mobile',
     endpoints: {
       health: '/api/health',
       auth: '/api/auth/*',
@@ -61,20 +126,44 @@ app.get('/', (req, res) => {
 
 // Health check route
 app.get('/api/health', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({ 
     status: 'OK',
     message: 'HealthScan QR API Server is running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    email_verification: '✅ ACTIVE'
+    email_verification: '✅ ACTIVE',
+    cors: '✅ ENABLED'
   });
 });
 
 // Test endpoint
 app.get('/api/test', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.json({ 
     success: true,
-    message: 'API test endpoint is working! 🎉'
+    message: 'API test endpoint is working! 🎉',
+    cors: '✅ Working',
+    origin: req.headers.origin
+  });
+});
+
+// CORS test endpoint
+app.options('/api/cors-test', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  res.status(200).end();
+});
+
+app.get('/api/cors-test', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.json({
+    success: true,
+    message: 'CORS test successful!',
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent'],
+    timestamp: new Date().toISOString()
   });
 });
 
@@ -95,6 +184,7 @@ app.get('/api/debug-firebase-callback', async (req, res) => {
     console.log('🔍 DEBUG - Raw URL:', req.url);
     console.log('🔍 DEBUG - Headers:', req.headers);
 
+    res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
     res.json({
       success: true,
       message: 'Debug information logged',
@@ -373,15 +463,19 @@ app.post('/api/test-email-verification', async (req, res) => {
 // Catch-all handler for undefined routes
 app.all('*', (req, res) => {
   console.log(`⚠️ 404 - Route not found: ${req.method} ${req.url}`);
+  console.log(`⚠️ Origin: ${req.headers.origin}`);
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
   res.status(404).json({ 
     success: false,
     error: 'Endpoint not found',
     method: req.method,
     url: req.url,
+    origin: req.headers.origin,
     available_endpoints: [
       'GET /',
       'GET /api/health',
       'GET /api/test',
+      'GET /api/cors-test',
       'GET /api/debug-firebase-callback (Debug)',
       'GET /api/auth/firebase-verify-callback (Firebase Email Verification)',
       'GET /api/verify-callback (Alternative Email Verification)',
@@ -410,4 +504,5 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🐛 Debug endpoint: /api/debug-firebase-callback`);
   console.log(`🔗 Make sure Firebase Action URL is set to:`);
   console.log(`   https://healthscanqr-backend.onrender.com/api/auth/firebase-verify-callback`);
+  console.log(`📱 CORS ENABLED for mobile and all Vercel domains`);
 });
