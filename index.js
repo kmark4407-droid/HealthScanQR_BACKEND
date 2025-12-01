@@ -1,4 +1,4 @@
-// index.js - COMPLETE REVISED VERSION
+// index.js - COMPLETE REVISED WITH WORKING EMAIL VERIFICATION
 import express from 'express';
 import cors from 'cors';
 import path from 'path';
@@ -16,61 +16,23 @@ const app = express();
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// =============================================
-// 🎯 CORS CONFIGURATION FOR MOBILE & VERCEL
-// =============================================
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-    const allowedOrigins = [
-      'http://localhost:4200',
-      'https://healthscanqr2025.vercel.app',
-      'https://health-scan-qr2025.vercel.app',
-      'https://healthscanqr.vercel.app',
-      'https://healthscanqr2025-git-main-healthscanqrs-projects.vercel.app',
-      // For local mobile testing
-      'http://localhost',
-      'http://localhost:8100',
-      'capacitor://localhost',
-      'ionic://localhost'
-    ];
-    
-    // Allow all vercel.app subdomains
-    if (origin.endsWith('.vercel.app')) {
-      return callback(null, true);
-    }
-    
-    if (allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      console.log(`🔒 CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
+// CORS Configuration
+app.use(cors({
+  origin: [
+    'http://localhost:4200', 
+    'https://healthscanqr2025.vercel.app',
+    'https://health-scan-qr2025.vercel.app'
+  ],
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin']
-};
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
+}));
 
-app.use(cors(corsOptions));
-
-// Handle preflight requests
-app.options('*', cors(corsOptions));
+app.options('*', cors());
 
 // Middleware
-app.use(express.json({ limit: '50mb' }));
-app.use(express.urlencoded({ extended: true, limit: '50mb' }));
-
-// Request logging middleware
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  console.log('Origin:', req.headers.origin);
-  console.log('User-Agent:', req.headers['user-agent']?.substring(0, 50) + '...');
-  next();
-});
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 // Serve uploaded images
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
@@ -79,6 +41,7 @@ app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 // 🎯 ROOT AND CORE ENDPOINTS
 // =============================================
 
+// Root route - Fix the 404 error
 app.get('/', (req, res) => {
   res.json({ 
     status: 'OK',
@@ -86,64 +49,239 @@ app.get('/', (req, res) => {
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
     version: '1.0.0',
-    cors: '✅ ENABLED for mobile',
     endpoints: {
       health: '/api/health',
       auth: '/api/auth/*',
       medical: '/api/medical/*', 
-      admin: '/api/admin/*'
+      admin: '/api/admin/*',
+      email_verification: '/api/auth/firebase-verify-callback'
     }
   });
 });
 
+// Health check route
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'OK',
     message: 'HealthScan QR API Server is running!',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    cors: '✅ ENABLED'
+    email_verification: '✅ ACTIVE'
   });
 });
 
-// CORS test endpoint
-app.get('/api/cors-test', (req, res) => {
-  res.json({
+// Test endpoint
+app.get('/api/test', (req, res) => {
+  res.json({ 
     success: true,
-    message: 'CORS test successful!',
-    origin: req.headers.origin,
-    userAgent: req.headers['user-agent'],
-    timestamp: new Date().toISOString()
+    message: 'API test endpoint is working! 🎉'
   });
 });
 
-// =============================================
-// 🎯 USE ROUTES - IMPORTANT: Must be here
-// =============================================
-
-// Use routes - ALL authentication routes come from auth.js
-app.use('/api/auth', authRoutes);      // <-- This includes /register, /login, /firebase-verify-callback
+// Use routes (after root route)
+app.use('/api/auth', authRoutes);
 app.use('/api/medical', medicalRoutes);
 app.use('/api/admin', adminRoutes);
 
 // =============================================
-// 🎯 LEGACY FIREBASE REDIRECT (for compatibility)
+// 🎯 EMAIL VERIFICATION ENDPOINTS
 // =============================================
 
-// This maintains compatibility with Firebase Action URL settings
-app.get('/api/auth/firebase-verify-callback', (req, res) => {
-  console.log('🔄 Legacy callback hit, preserving for Firebase compatibility');
-  // Just pass through to the auth routes
-  // The actual handler is in auth.js
-  res.redirect(`/api/auth/firebase-verify-callback?${new URLSearchParams(req.query).toString()}`);
+// ✅ DEBUG ENDPOINT - See what Firebase is actually sending
+app.get('/api/debug-firebase-callback', async (req, res) => {
+  try {
+    const allParams = req.query;
+    console.log('🔍 DEBUG - All query parameters received:', allParams);
+    console.log('🔍 DEBUG - Raw URL:', req.url);
+    console.log('🔍 DEBUG - Headers:', req.headers);
+
+    res.json({
+      success: true,
+      message: 'Debug information logged',
+      parameters: allParams,
+      headers: req.headers,
+      timestamp: new Date().toISOString()
+    });
+
+  } catch (err) {
+    console.error('❌ Debug endpoint error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      error: err.message 
+    });
+  }
 });
 
-// =============================================
-// 🎯 EMAIL VERIFICATION ENDPOINTS (for direct access)
-// =============================================
+// ✅ FIREBASE VERIFICATION CALLBACK - WORKING VERSION
+app.get('/api/auth/firebase-verify-callback', async (req, res) => {
+  try {
+    const { email, oobCode, mode } = req.query;
 
-// Manual verification endpoint (admin/quick verify)
-app.post('/api/verify-email', async (req, res) => {
+    console.log('🎯 FIREBASE VERIFICATION CALLBACK RECEIVED');
+    console.log('📧 Email parameter:', email || 'NOT PROVIDED');
+    console.log('🔑 OOB Code:', oobCode ? 'PRESENT' : 'MISSING');
+    console.log('🎯 Mode:', mode || 'NOT PROVIDED');
+
+    // Import the email service
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+
+    let verifiedEmail = null;
+
+    // METHOD 1: If OOB code is provided, use it to get the email (MOST RELIABLE)
+    if (oobCode) {
+      console.log('🔐 METHOD 1: Using OOB code to extract email...');
+      const verificationResult = await firebaseEmailService.verifyOobCode(oobCode);
+      
+      if (verificationResult.success && verificationResult.email) {
+        verifiedEmail = verificationResult.email;
+        console.log('✅ Email extracted from OOB code:', verifiedEmail);
+      } else {
+        console.log('❌ Failed to extract email from OOB code:', verificationResult.error);
+      }
+    }
+
+    // METHOD 2: If email is directly provided in URL
+    if (!verifiedEmail && email) {
+      console.log('📧 METHOD 2: Using email from URL parameter:', email);
+      verifiedEmail = email;
+      
+      // If we have OOB code, verify it
+      if (oobCode) {
+        console.log('🔐 Verifying OOB code with extracted email...');
+        await firebaseEmailService.verifyOobCode(oobCode);
+      }
+    }
+
+    // If we still don't have an email, show error
+    if (!verifiedEmail) {
+      console.log('❌ CRITICAL: Could not determine email address');
+      console.log('❌ Available parameters:', { 
+        email: email || 'missing', 
+        oobCode: oobCode ? 'present' : 'missing', 
+        mode: mode || 'missing' 
+      });
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email_detected');
+    }
+
+    // Update database verification status
+    console.log('🔄 Updating database verification for:', verifiedEmail);
+    const dbResult = await firebaseEmailService.handleVerificationCallback(verifiedEmail);
+
+    if (dbResult.success) {
+      console.log('🎉 SUCCESS: Email verified in database:', verifiedEmail);
+      console.log('✅ User verification status:', dbResult.user.email_verified);
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(verifiedEmail)}`);
+    } else {
+      console.log('❌ Database update failed for:', verifiedEmail);
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verification_error=database_failed&email=${encodeURIComponent(verifiedEmail)}`);
+    }
+
+  } catch (err) {
+    console.error('❌ Firebase callback error:', err.message);
+    console.error('❌ Error stack:', err.stack);
+    res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
+  }
+});
+
+// ✅ ALTERNATIVE VERIFICATION CALLBACK
+app.get('/api/verify-callback', async (req, res) => {
+  try {
+    const { email, oobCode } = req.query;
+
+    console.log('🎯 ALTERNATIVE VERIFICATION CALLBACK RECEIVED');
+    console.log('📧 Email:', email || 'NOT PROVIDED');
+    console.log('🔑 OOB Code:', oobCode ? 'PRESENT' : 'MISSING');
+
+    if (!oobCode && !email) {
+      console.log('❌ No OOB code or email provided');
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_parameters');
+    }
+
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+
+    let verifiedEmail = null;
+
+    // Priority: OOB code first, then email parameter
+    if (oobCode) {
+      console.log('🔐 Using OOB code to extract email...');
+      const verificationResult = await firebaseEmailService.verifyOobCode(oobCode);
+      
+      if (verificationResult.success && verificationResult.email) {
+        verifiedEmail = verificationResult.email;
+        console.log('✅ Email from OOB code:', verifiedEmail);
+      }
+    }
+
+    if (!verifiedEmail && email) {
+      console.log('📧 Using provided email parameter:', email);
+      verifiedEmail = email;
+    }
+
+    if (!verifiedEmail) {
+      console.log('❌ Could not determine email address');
+      return res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=no_email_detected');
+    }
+
+    // Update database
+    console.log('🔄 Updating database for:', verifiedEmail);
+    const dbResult = await firebaseEmailService.handleVerificationCallback(verifiedEmail);
+
+    if (dbResult.success) {
+      console.log('✅ Database updated successfully');
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verified=true&email=${encodeURIComponent(verifiedEmail)}`);
+    } else {
+      console.log('❌ Database update failed');
+      res.redirect(`https://healthscanqr2025.vercel.app/login?verification_error=database_failed`);
+    }
+
+  } catch (err) {
+    console.error('❌ Alternative callback error:', err.message);
+    res.redirect('https://healthscanqr2025.vercel.app/login?verification_error=server_error');
+  }
+});
+
+// ✅ MANUAL SYNC ENDPOINT
+app.post('/api/manual-sync-verification', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email and password are required' 
+      });
+    }
+
+    console.log('🔄 Manual sync verification for:', email);
+
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+    const syncResult = await firebaseEmailService.checkUserVerification(email, password);
+
+    if (syncResult.success && syncResult.emailVerified) {
+      res.json({
+        success: true,
+        message: '✅ Email verified and synced! You can now login.',
+        emailVerified: true
+      });
+    } else {
+      res.status(400).json({
+        success: false,
+        message: 'Email not verified yet. Please check your email and click the verification link.',
+        emailVerified: false
+      });
+    }
+
+  } catch (err) {
+    console.error('❌ Manual sync error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Server error during verification sync' 
+    });
+  }
+});
+
+// ✅ QUICK VERIFY ENDPOINT (ADMIN)
+app.post('/api/quick-verify', async (req, res) => {
   try {
     const { email } = req.body;
 
@@ -154,126 +292,122 @@ app.post('/api/verify-email', async (req, res) => {
       });
     }
 
-    console.log('⚡ Quick email verification for:', email);
+    console.log('⚡ Quick verify for:', email);
 
-    // Import the database pool
-    const pool = (await import('./db.js')).default;
-    
-    const result = await pool.query(
-      'UPDATE users SET email_verified = true WHERE email = $1 RETURNING *',
-      [email]
-    );
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+    const result = await firebaseEmailService.handleVerificationCallback(email);
 
-    if (result.rows.length === 0) {
-      return res.status(404).json({
+    if (result.success) {
+      res.json({
+        success: true,
+        message: '✅ QUICK VERIFICATION SUCCESS! User can now login.',
+        user: result.user
+      });
+    } else {
+      res.status(404).json({
         success: false,
-        message: 'User not found'
+        message: 'User not found or verification failed'
       });
     }
-
-    res.json({
-      success: true,
-      message: '✅ Email verified successfully!',
-      user: result.rows[0]
-    });
 
   } catch (err) {
     console.error('❌ Quick verify error:', err.message);
     res.status(500).json({ 
       success: false,
-      message: 'Server error during verification' 
+      message: 'Server error during quick verify' 
     });
   }
 });
 
-// =============================================
-// 🎯 DEBUG ENDPOINTS
-// =============================================
+// ✅ TEST EMAIL VERIFICATION ENDPOINT
+app.post('/api/test-email-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
 
-app.get('/api/debug/routes', (req, res) => {
-  const routes = [];
-  
-  // Get all registered routes
-  app._router.stack.forEach((middleware) => {
-    if (middleware.route) {
-      routes.push({
-        path: middleware.route.path,
-        methods: Object.keys(middleware.route.methods)
-      });
-    } else if (middleware.name === 'router') {
-      middleware.handle.stack.forEach((handler) => {
-        if (handler.route) {
-          routes.push({
-            path: handler.route.path,
-            methods: Object.keys(handler.route.methods)
-          });
-        }
+    if (!email) {
+      return res.status(400).json({ 
+        success: false,
+        message: 'Email is required' 
       });
     }
-  });
 
-  res.json({
-    success: true,
-    totalRoutes: routes.length,
-    routes: routes.sort((a, b) => a.path.localeCompare(b.path))
-  });
+    console.log('🧪 Testing email verification for:', email);
+
+    const { default: firebaseEmailService } = await import('./services/firebase-email-service.js');
+    
+    // Test Firebase connection
+    const connectionTest = await firebaseEmailService.testFirebaseConnection();
+    
+    if (!connectionTest.success) {
+      return res.status(500).json({
+        success: false,
+        message: 'Firebase connection failed',
+        error: connectionTest.error
+      });
+    }
+
+    // Create test user and send verification
+    const testPassword = 'test123456';
+    const emailResult = await firebaseEmailService.sendVerificationEmail(email, testPassword, 'test-user-id');
+
+    res.json({
+      success: true,
+      message: 'Test email verification initiated',
+      connection: connectionTest,
+      emailResult: emailResult
+    });
+
+  } catch (err) {
+    console.error('❌ Test email error:', err.message);
+    res.status(500).json({ 
+      success: false,
+      message: 'Test failed: ' + err.message 
+    });
+  }
 });
 
 // =============================================
 // 🎯 CATCH-ALL HANDLER
 // =============================================
 
+// Catch-all handler for undefined routes
 app.all('*', (req, res) => {
   console.log(`⚠️ 404 - Route not found: ${req.method} ${req.url}`);
-  console.log(`⚠️ Origin: ${req.headers.origin}`);
-  
   res.status(404).json({ 
     success: false,
     error: 'Endpoint not found',
     method: req.method,
     url: req.url,
-    origin: req.headers.origin,
     available_endpoints: [
       'GET /',
       'GET /api/health',
-      'GET /api/cors-test',
-      'GET /api/debug/routes',
+      'GET /api/test',
+      'GET /api/debug-firebase-callback (Debug)',
+      'GET /api/auth/firebase-verify-callback (Firebase Email Verification)',
+      'GET /api/verify-callback (Alternative Email Verification)',
+      'POST /api/manual-sync-verification',
+      'POST /api/quick-verify',
+      'POST /api/test-email-verification',
       'POST /api/auth/register',
       'POST /api/auth/login',
       'GET /api/auth/me',
-      'GET /api/auth/firebase-verify-callback',
-      'POST /api/auth/resend-verification',
-      'POST /api/medical/update',
-      'GET /api/medical/:user_id',
-      'POST /api/medical/test-post',
       'POST /api/admin/admin-login',
-      'POST /api/verify-email (Admin)'
+      'GET /api/admin/users',
+      'GET /api/admin/activity-logs'
     ]
   });
 });
-
-// =============================================
-// 🎯 START SERVER
-// =============================================
 
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🌍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`✅ CORS ENABLED for:`);
-  console.log(`   - https://healthscanqr2025.vercel.app`);
-  console.log(`   - https://*.vercel.app (all subdomains)`);
-  console.log(`   - Local development`);
-  console.log(`✅ AUTHENTICATION ENDPOINTS READY:`);
-  console.log(`   POST /api/auth/register`);
-  console.log(`   POST /api/auth/login`);
-  console.log(`   GET /api/auth/me`);
-  console.log(`   GET /api/auth/firebase-verify-callback`);
-  console.log(`✅ MEDICAL ENDPOINTS READY:`);
-  console.log(`   POST /api/medical/update`);
-  console.log(`   GET /api/medical/:user_id`);
-  console.log(`✅ Test URLs:`);
-  console.log(`   https://healthscanqr-backend.onrender.com/api/health`);
-  console.log(`   https://healthscanqr-backend.onrender.com/api/cors-test`);
-  console.log(`   https://healthscanqr-backend.onrender.com/api/auth/test`);
+  console.log(`✅ Health check: https://healthscanqr-backend.onrender.com/api/health`);
+  console.log(`✅ Root endpoint: https://healthscanqr-backend.onrender.com/`);
+  console.log(`🎉 EMAIL VERIFICATION SYSTEM READY!`);
+  console.log(`📧 Firebase callback: /api/auth/firebase-verify-callback`);
+  console.log(`📧 Alternative callback: /api/verify-callback`);
+  console.log(`🐛 Debug endpoint: /api/debug-firebase-callback`);
+  console.log(`🔗 Make sure Firebase Action URL is set to:`);
+  console.log(`   https://healthscanqr-backend.onrender.com/api/auth/firebase-verify-callback`);
 });
