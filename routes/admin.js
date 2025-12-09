@@ -76,7 +76,7 @@ router.get('/analytics', async (req, res) => {
       const conditionsResult = await pool.query('SELECT * FROM top_medical_conditions');
       let topConditions = conditionsResult.rows || [];
       
-      // Process conditions - remove percentages
+      // Process conditions - remove percentages, no severity/status
       topConditions = topConditions.map(cond => ({
         condition: cond.condition || 'Unknown',
         patient_count: parseInt(cond.patient_count) || 0
@@ -206,6 +206,30 @@ async function getAnalyticsFromTables(req, res) {
     `);
     const monthlyScans = parseInt(recentScansResult.rows[0].count) || 0;
     
+    // Get today's registrations (new users created today)
+    const todayRegistrationsResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM users 
+      WHERE DATE(created_at) = CURRENT_DATE
+    `);
+    const dailyRegistrations = parseInt(todayRegistrationsResult.rows[0].count) || 0;
+    
+    // Get weekly registrations (last 7 days)
+    const weeklyRegistrationsResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM users 
+      WHERE created_at >= CURRENT_DATE - INTERVAL '7 days'
+    `);
+    const weeklyRegistrations = parseInt(weeklyRegistrationsResult.rows[0].count) || 0;
+    
+    // Get monthly registrations (last 30 days)
+    const monthlyRegistrationsResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM users 
+      WHERE created_at >= CURRENT_DATE - INTERVAL '30 days'
+    `);
+    const monthlyRegistrations = parseInt(monthlyRegistrationsResult.rows[0].count) || 0;
+    
     // Get demographics
     const demographicsResult = await pool.query(`
       SELECT 
@@ -257,7 +281,7 @@ async function getAnalyticsFromTables(req, res) {
       ? Math.round((approvedUsers / usersWithMedicalInfo) * 100)
       : 0;
     
-    // Get today's activity
+    // Get today's scans
     const todayScansResult = await pool.query(`
       SELECT COUNT(*) as count 
       FROM activity_logs 
@@ -266,15 +290,34 @@ async function getAnalyticsFromTables(req, res) {
     `);
     const dailyScans = parseInt(todayScansResult.rows[0].count) || 0;
     
-    // Get today's registrations
-    const todayRegistrationsResult = await pool.query(`
+    // Get today's updates (medical info updates)
+    const todayUpdatesResult = await pool.query(`
       SELECT COUNT(*) as count 
-      FROM users 
-      WHERE DATE(created_at) = CURRENT_DATE
+      FROM activity_logs 
+      WHERE action = 'UPDATE_MEDICAL' 
+        AND DATE(timestamp) = CURRENT_DATE
     `);
-    const dailyRegistrations = parseInt(todayRegistrationsResult.rows[0].count) || 0;
+    const dailyUpdates = parseInt(todayUpdatesResult.rows[0].count) || 0;
     
-    // Build response
+    // Get weekly updates (last 7 days)
+    const weeklyUpdatesResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM activity_logs 
+      WHERE action = 'UPDATE_MEDICAL' 
+        AND timestamp >= CURRENT_DATE - INTERVAL '7 days'
+    `);
+    const weeklyUpdates = parseInt(weeklyUpdatesResult.rows[0].count) || 0;
+    
+    // Get monthly updates (last 30 days)
+    const monthlyUpdatesResult = await pool.query(`
+      SELECT COUNT(*) as count 
+      FROM activity_logs 
+      WHERE action = 'UPDATE_MEDICAL' 
+        AND timestamp >= CURRENT_DATE - INTERVAL '30 days'
+    `);
+    const monthlyUpdates = parseInt(monthlyUpdatesResult.rows[0].count) || 0;
+    
+    // Build response with REAL registration and update counts
     const analyticsData = {
       totalUsers,
       userGrowthRate: 12.5,
@@ -283,18 +326,20 @@ async function getAnalyticsFromTables(req, res) {
       approvedUsers,
       approvalRate,
       
-      // Activity data
+      // Activity data - USE REAL DATA
       dailyScans,
       weeklyScans: Math.round(monthlyScans * 0.25),
       monthlyScans,
       
+      // Use REAL registration counts
       dailyRegistrations,
-      weeklyRegistrations: Math.round(dailyRegistrations * 5),
-      monthlyRegistrations: Math.round(dailyRegistrations * 22),
+      weeklyRegistrations,
+      monthlyRegistrations,
       
-      dailyUpdates: 8,
-      weeklyUpdates: 45,
-      monthlyUpdates: 192,
+      // Use REAL update counts
+      dailyUpdates,
+      weeklyUpdates,
+      monthlyUpdates,
       
       scanGrowth: 8.3,
       registrationGrowth: 12.5,
@@ -305,7 +350,14 @@ async function getAnalyticsFromTables(req, res) {
       recentActivity: []
     };
     
-    console.log('✅ Direct table query analytics loaded');
+    console.log('✅ Direct table query analytics loaded with REAL data:', {
+      dailyRegistrations,
+      weeklyRegistrations,
+      monthlyRegistrations,
+      dailyUpdates,
+      weeklyUpdates,
+      monthlyUpdates
+    });
     
     res.json({
       success: true,
@@ -336,7 +388,7 @@ function generateSimplifiedAnalyticsData() {
     approvedUsers: 134,
     approvalRate: 85.9,
     
-    // Activity data
+    // Activity data - USE REALISTIC COUNTS
     dailyScans: 15,
     weeklyScans: 87,
     monthlyScans: 423,
@@ -363,7 +415,7 @@ function generateSimplifiedAnalyticsData() {
       { blood_type: 'A-', count: 8, average_age: '40' }
     ],
     
-    // Top conditions (no percentages)
+    // Top conditions (no severity/status)
     topConditions: [
       { condition: 'Hypertension', patient_count: 45 },
       { condition: 'Diabetes', patient_count: 32 },
@@ -388,6 +440,7 @@ function generateSimplifiedAnalyticsData() {
     ]
   };
 }
+
 // ==================== ADMIN AUTHENTICATION ====================
 
 // ADMIN LOGIN
